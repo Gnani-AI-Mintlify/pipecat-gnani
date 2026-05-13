@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pipecat-gnani"
-version = "0.1.0"
+version = "0.2.0"
 description = "Pipecat service integration for Gnani Vachana speech AI — STT & TTS for Indian languages"
 readme = "README.md"
 license = "BSD-2-Clause"

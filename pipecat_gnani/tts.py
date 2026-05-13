@@ -50,6 +50,8 @@ except ModuleNotFoundError as e:
 GNANI_TTS_REST_URL = "https://api.vachana.ai/api/v1/tts/inference"
 GNANI_TTS_WS_URL = "wss://api.vachana.ai/api/v1/tts"
 
+SUPPORTED_SAMPLE_RATES = (8000, 16000, 22050, 44100)
+
 SUPPORTED_VOICES = frozenset({
     "sia", "raju", "kanika", "nikita", "ravan", "simran", "karan", "neha",
 })
@@ -146,10 +148,16 @@ class GnaniHttpTTSService(TTSService):
             aiohttp_session: Shared aiohttp session for making requests.
             voice_id: Speaker voice ID. Defaults to "sia".
             model: TTS model to use. Defaults to "vachana-voice-v2".
-            sample_rate: Audio sample rate in Hz. Defaults to 24000.
+            sample_rate: Audio sample rate in Hz. Must be one of 8000, 16000, 22050, 44100.
             settings: Runtime-updatable settings.
             **kwargs: Additional arguments passed to parent TTSService.
         """
+        resolved_rate = sample_rate or 16000
+        if resolved_rate not in SUPPORTED_SAMPLE_RATES:
+            raise ValueError(
+                f"sample_rate must be one of {SUPPORTED_SAMPLE_RATES}, got {resolved_rate}"
+            )
+
         default_settings = self.Settings(
             model=model,
             voice=voice_id or "sia",
@@ -169,7 +177,7 @@ class GnaniHttpTTSService(TTSService):
             )
 
         super().__init__(
-            sample_rate=sample_rate or 24000,
+            sample_rate=resolved_rate,
             push_stop_frames=True,
             push_start_frame=True,
             settings=default_settings,
@@ -273,10 +281,16 @@ class GnaniTTSService(InterruptibleTTSService):
             api_key: Gnani API key for authentication.
             voice_id: Speaker voice ID. Defaults to "sia".
             model: TTS model to use. Defaults to "vachana-voice-v2".
-            sample_rate: Audio sample rate in Hz. Defaults to 24000.
+            sample_rate: Audio sample rate in Hz. Must be one of 8000, 16000, 22050, 44100.
             settings: Runtime-updatable settings.
             **kwargs: Additional arguments passed to parent.
         """
+        resolved_rate = sample_rate or 16000
+        if resolved_rate not in SUPPORTED_SAMPLE_RATES:
+            raise ValueError(
+                f"sample_rate must be one of {SUPPORTED_SAMPLE_RATES}, got {resolved_rate}"
+            )
+
         default_settings = self.Settings(
             model=model,
             voice=voice_id or "sia",
@@ -296,7 +310,7 @@ class GnaniTTSService(InterruptibleTTSService):
             )
 
         super().__init__(
-            sample_rate=sample_rate or 24000,
+            sample_rate=resolved_rate,
             push_stop_frames=True,
             push_start_frame=True,
             settings=default_settings,
@@ -316,22 +330,22 @@ class GnaniTTSService(InterruptibleTTSService):
 
     async def start(self, frame: StartFrame):
         await super().start(frame)
-        await self._connect()
+        await self._connect_websocket()
 
     async def stop(self, frame: EndFrame):
         await super().stop(frame)
-        await self._disconnect()
+        await self._disconnect_websocket()
 
     async def cancel(self, frame: CancelFrame):
         await super().cancel(frame)
-        await self._disconnect()
+        await self._disconnect_websocket()
 
     @traced_tts
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
         logger.debug(f"{self}: Streaming TTS [{text}]")
 
         if not self._ws:
-            await self._connect()
+            await self._connect_websocket()
 
         if not self._ws:
             yield ErrorFrame(error="Gnani TTS WebSocket not connected")
@@ -364,10 +378,12 @@ class GnaniTTSService(InterruptibleTTSService):
 
         yield None
 
-    async def _connect(self):
-        logger.debug("Connecting to Gnani Vachana TTS WebSocket")
-
+    async def _connect_websocket(self):
         try:
+            if self._ws:
+                return
+
+            logger.debug("Connecting to Gnani Vachana TTS WebSocket")
             headers = {
                 "Content-Type": "application/json",
                 "X-API-Key-ID": self._api_key,
@@ -391,9 +407,9 @@ class GnaniTTSService(InterruptibleTTSService):
         except Exception as e:
             logger.error(f"Failed to connect to Gnani TTS: {e}")
             self._ws = None
-            await self._call_event_handler("on_connection_error", str(e))
+            await self._call_event_handler("on_connection_error", f"{e}")
 
-    async def _disconnect(self):
+    async def _disconnect_websocket(self):
         if self._receive_task:
             self._receive_task.cancel()
             try:
@@ -404,12 +420,11 @@ class GnaniTTSService(InterruptibleTTSService):
 
         if self._ws:
             try:
+                logger.debug("Disconnecting from Gnani Vachana TTS WebSocket")
                 await self._ws.close()
             except Exception:
                 pass
             self._ws = None
-
-        await self._call_event_handler("on_disconnected")
 
     async def _receive_messages(self):
         try:
@@ -446,7 +461,7 @@ class GnaniTTSService(InterruptibleTTSService):
         except Exception as e:
             logger.error(f"Gnani TTS receive error: {e}")
             self._bot_speaking = False
-            await self._call_event_handler("on_connection_error", str(e))
+            await self._call_event_handler("on_connection_error", f"{e}")
 
     async def _handle_audio_chunk(self, audio_bytes: bytes):
         if len(audio_bytes) > 44 and audio_bytes.startswith(b"RIFF"):

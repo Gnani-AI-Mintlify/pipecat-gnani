@@ -9,6 +9,8 @@ Services:
     - GnaniTTSService: WebSocket streaming text-to-speech with interruption handling
 """
 
+__version__ = "0.2.0"
+
 from pipecat_gnani.stt import GnaniSTTService, GnaniSTTSettings
 from pipecat_gnani.tts import (
     GnaniHttpTTSService,
@@ -17,8 +19,6 @@ from pipecat_gnani.tts import (
     GnaniTTSSettings,
     SUPPORTED_VOICES,
 )
-
-__version__ = "0.1.0"
 
 __all__ = [
     "GnaniSTTService",

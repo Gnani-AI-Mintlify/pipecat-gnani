@@ -23,8 +23,6 @@ from pipecat.services.settings import NOT_GIVEN, STTSettings, _NotGiven, is_give
 from pipecat.services.stt_service import STTService
 from pipecat.transcriptions.language import Language, resolve_language
 from pipecat.utils.time import time_now_iso8601
-from pipecat.utils.tracing.service_decorators import traced_stt
-
 from pipecat_gnani._sdk import sdk_headers
 
 try:
@@ -155,7 +153,6 @@ class GnaniSTTService(STTService):
         await super().cancel(frame)
         await self._disconnect()
 
-    @traced_stt
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         if not self._ws:
             yield None
@@ -247,7 +244,7 @@ class GnaniSTTService(STTService):
                         )
 
                 elif msg_type in ("speech_start", "vad_start"):
-                    await self._start_metrics()
+                    pass
 
                 elif msg_type in ("speech_end", "vad_end"):
                     pass
