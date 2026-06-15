@@ -14,7 +14,7 @@ Services:
     - GnaniTTSService: WebSocket streaming text-to-speech with interruption handling
 """
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 from pipecat_gnani.stt import (
     GnaniHttpSTTService,

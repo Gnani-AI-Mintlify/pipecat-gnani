@@ -3,9 +3,9 @@
 [![PyPI](https://img.shields.io/pypi/v/pipecat-gnani)](https://pypi.org/project/pipecat-gnani/)
 [![License](https://img.shields.io/badge/License-BSD%202--Clause-blue.svg)](LICENSE)
 
-[Pipecat](https://github.com/pipecat-ai/pipecat) service integration for **[Gnani Vachana](https://gnani.ai/)** — high-accuracy Speech-to-Text and low-latency Text-to-Speech for Indian languages.
+[Pipecat](https://github.com/pipecat-ai/pipecat) service integration for **[Gnani](https://gnani.ai/)** — high-accuracy Speech-to-Text and low-latency Text-to-Speech for Indian languages.
 
-> **Vachana** is a production-ready speech AI platform by [Gnani.ai](https://gnani.ai) supporting 10+ Indian languages with 6 voices, real-time streaming, multilingual transcription, and code-switching capabilities.
+> **Gnani** is a production-ready speech AI platform supporting 10+ Indian languages with 6 voices, real-time streaming, multilingual transcription, and code-switching capabilities.
 
 ## Installation
 
@@ -13,7 +13,7 @@
 pip install pipecat-gnani
 ```
 
-This will also install the [`gnani-vachana`](https://pypi.org/project/gnani-vachana/) (>= 0.4.3) core SDK as a dependency.
+This will also install the [`gnani-vachana`](https://pypi.org/project/gnani-vachana/) (>= 0.4.4) core SDK as a dependency.
 
 ## Prerequisites
 
@@ -140,7 +140,7 @@ STT uses BCP-47 locale codes (e.g. `hi-IN`).
 
 TTS uses ISO 639 language codes (e.g. `hi`, `bn`). Note: TTS does **not** use the `-IN` suffix.
 
-For the full list of supported languages, see [TTS — Supported Languages](https://docs.inya.ai/vachana/TTS/tts-inference#supported-languages).
+For the full list of supported languages, see [TTS — Supported Languages](https://docs.gnani.ai/api/TTS/tts-inference#supported-languages).
 
 ## Available Voices
 
@@ -156,7 +156,7 @@ For the full list of supported languages, see [TTS — Supported Languages](http
 ## Architecture
 
 ```
-gnani-vachana (>=0.4.3)  ← Core SDK (REST, SSE, WebSocket clients)
+gnani-vachana (>=0.4.4)  ← Core SDK (REST, SSE, WebSocket clients)
         ↑
 pipecat-gnani            ← This package (Pipecat service adapters)
   ├── STT: REST + WebSocket
@@ -167,14 +167,14 @@ This package wraps the `gnani-vachana` SDK into Pipecat's `SegmentedSTTService`,
 
 ## Documentation
 
-- [Vachana API Docs](https://docs.inya.ai/vachana/introduction/introduction)
+- [Gnani API Docs](https://docs.gnani.ai/)
 - [Pipecat Docs](https://docs.pipecat.ai/)
 - [gnani-vachana SDK](https://pypi.org/project/gnani-vachana/)
-- [STT REST API](https://docs.inya.ai/vachana/STT/speech-to-text)
-- [STT Realtime WebSocket](https://docs.inya.ai/vachana/STT/stt-websocket)
-- [TTS REST API](https://docs.inya.ai/vachana/TTS/tts-inference)
-- [TTS Streaming (SSE)](https://docs.inya.ai/vachana/TTS/tts-sse)
-- [TTS Realtime WebSocket](https://docs.inya.ai/vachana/TTS/tts-websocket)
+- [STT REST API](https://docs.gnani.ai/api/STT/speech-to-text)
+- [STT Realtime WebSocket](https://docs.gnani.ai/api/STT/stt-websocket)
+- [TTS REST API](https://docs.gnani.ai/api/TTS/tts-inference)
+- [TTS Streaming (SSE)](https://docs.gnani.ai/api/TTS/tts-sse)
+- [TTS Realtime WebSocket](https://docs.gnani.ai/api/TTS/tts-websocket)
 
 ## License
 
