@@ -16,7 +16,7 @@ Services:
 API docs: https://docs.gnani.ai/api/introduction/introduction
 """
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 from pipecat_gnani._common import (
     STT_FORMAT_TRANSCRIBE,
@@ -39,18 +39,18 @@ from pipecat_gnani.tts import (
 )
 
 __all__ = [
+    "STT_FORMAT_TRANSCRIBE",
+    "STT_FORMAT_VERBATIM",
+    "SUPPORTED_VOICES",
     "GnaniHttpSTTService",
     "GnaniHttpSTTSettings",
-    "GnaniSTTService",
-    "GnaniSTTSettings",
     "GnaniHttpTTSService",
     "GnaniHttpTTSSettings",
     "GnaniSSETTSService",
     "GnaniSSETTSSettings",
+    "GnaniSTTService",
+    "GnaniSTTSettings",
     "GnaniTTSService",
     "GnaniTTSSettings",
-    "SUPPORTED_VOICES",
-    "STT_FORMAT_VERBATIM",
-    "STT_FORMAT_TRANSCRIBE",
     "__version__",
 ]

@@ -17,8 +17,8 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 
 import aiohttp
+from gnani.tts.client import _strip_wav_header, _validate_voice
 from loguru import logger
-
 from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
@@ -32,13 +32,10 @@ from pipecat.services.settings import NOT_GIVEN, TTSSettings, _NotGiven
 from pipecat.services.tts_service import InterruptibleTTSService, TTSService
 from pipecat.utils.tracing.service_decorators import traced_tts
 
-from gnani.tts.client import _validate_voice, _strip_wav_header
-
 from pipecat_gnani._common import (
     GNANI_TTS_REST_URL,
     GNANI_TTS_SSE_URL,
     GNANI_TTS_WS_URL,
-    SUPPORTED_VOICES,
     TTS_SUPPORTED_SAMPLE_RATES,
 )
 from pipecat_gnani._sdk import sdk_headers
@@ -147,8 +144,11 @@ class GnaniHttpTTSService(TTSService):
             )
 
         default_settings = self.Settings(
-            model=model, voice=voice_id or "Karan",
-            encoding="linear_pcm", container="wav", sample_width=2,
+            model=model,
+            voice=voice_id or "Karan",
+            encoding="linear_pcm",
+            container="wav",
+            sample_width=2,
         )
         if settings is not None:
             default_settings.apply_update(settings)
@@ -156,8 +156,11 @@ class GnaniHttpTTSService(TTSService):
         _validate_voice(default_settings.voice)
 
         super().__init__(
-            sample_rate=resolved_rate, push_stop_frames=True,
-            push_start_frame=True, settings=default_settings, **kwargs,
+            sample_rate=resolved_rate,
+            push_stop_frames=True,
+            push_start_frame=True,
+            settings=default_settings,
+            **kwargs,
         )
 
         self._api_key = api_key
@@ -196,8 +199,10 @@ class GnaniHttpTTSService(TTSService):
             audio_data = _strip_wav_header(audio_data)
 
             yield TTSAudioRawFrame(
-                audio=audio_data, sample_rate=self.sample_rate,
-                num_channels=1, context_id=context_id,
+                audio=audio_data,
+                sample_rate=self.sample_rate,
+                num_channels=1,
+                context_id=context_id,
             )
 
         except Exception as e:
@@ -250,8 +255,11 @@ class GnaniSSETTSService(TTSService):
             )
 
         default_settings = self.Settings(
-            model=model, voice=voice_id or "Karan",
-            encoding="linear_pcm", container="wav", sample_width=2,
+            model=model,
+            voice=voice_id or "Karan",
+            encoding="linear_pcm",
+            container="wav",
+            sample_width=2,
         )
         if settings is not None:
             default_settings.apply_update(settings)
@@ -259,8 +267,11 @@ class GnaniSSETTSService(TTSService):
         _validate_voice(default_settings.voice)
 
         super().__init__(
-            sample_rate=resolved_rate, push_stop_frames=True,
-            push_start_frame=True, settings=default_settings, **kwargs,
+            sample_rate=resolved_rate,
+            push_stop_frames=True,
+            push_start_frame=True,
+            settings=default_settings,
+            **kwargs,
         )
 
         self._api_key = api_key
@@ -303,11 +314,11 @@ class GnaniSSETTSService(TTSService):
                         continue
 
                     if line.startswith("event:"):
-                        current_event = line[len("event:"):].strip()
+                        current_event = line[len("event:") :].strip()
                         continue
 
                     if line.startswith("data:"):
-                        data_str = line[len("data:"):].strip()
+                        data_str = line[len("data:") :].strip()
                     else:
                         continue
 
@@ -321,8 +332,10 @@ class GnaniSSETTSService(TTSService):
                         if audio_bytes:
                             await self.stop_ttfb_metrics()
                             yield TTSAudioRawFrame(
-                                audio=audio_bytes, sample_rate=self.sample_rate,
-                                num_channels=1, context_id=context_id,
+                                audio=audio_bytes,
+                                sample_rate=self.sample_rate,
+                                num_channels=1,
+                                context_id=context_id,
                             )
 
                     elif current_event == "completed":
@@ -343,9 +356,7 @@ class GnaniSSETTSService(TTSService):
                         except (json.JSONDecodeError, ValueError):
                             continue
                         if data.get("status") == "error":
-                            yield ErrorFrame(
-                                error=f"Gnani TTS SSE: {data.get('message', '')}"
-                            )
+                            yield ErrorFrame(error=f"Gnani TTS SSE: {data.get('message', '')}")
                             return
                         audio_b64 = data.get("audio", "")
                         if audio_b64:
@@ -353,8 +364,10 @@ class GnaniSSETTSService(TTSService):
                             if audio_bytes:
                                 await self.stop_ttfb_metrics()
                                 yield TTSAudioRawFrame(
-                                    audio=audio_bytes, sample_rate=self.sample_rate,
-                                    num_channels=1, context_id=context_id,
+                                    audio=audio_bytes,
+                                    sample_rate=self.sample_rate,
+                                    num_channels=1,
+                                    context_id=context_id,
                                 )
 
         except asyncio.CancelledError:
@@ -407,8 +420,11 @@ class GnaniTTSService(InterruptibleTTSService):
             )
 
         default_settings = self.Settings(
-            model=model, voice=voice_id or "Karan",
-            encoding="linear_pcm", container="wav", sample_width=2,
+            model=model,
+            voice=voice_id or "Karan",
+            encoding="linear_pcm",
+            container="wav",
+            sample_width=2,
         )
         if settings is not None:
             default_settings.apply_update(settings)
@@ -416,8 +432,11 @@ class GnaniTTSService(InterruptibleTTSService):
         _validate_voice(default_settings.voice)
 
         super().__init__(
-            sample_rate=resolved_rate, push_stop_frames=True,
-            push_start_frame=True, settings=default_settings, **kwargs,
+            sample_rate=resolved_rate,
+            push_stop_frames=True,
+            push_start_frame=True,
+            settings=default_settings,
+            **kwargs,
         )
 
         self._api_key = api_key
@@ -561,6 +580,8 @@ class GnaniTTSService(InterruptibleTTSService):
                 await self.stop_ttfb_metrics()
             await self.push_frame(
                 TTSAudioRawFrame(
-                    audio=audio_bytes, sample_rate=self.sample_rate, num_channels=1,
+                    audio=audio_bytes,
+                    sample_rate=self.sample_rate,
+                    num_channels=1,
                 )
             )

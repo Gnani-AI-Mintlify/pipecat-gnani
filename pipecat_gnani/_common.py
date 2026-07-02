@@ -6,19 +6,19 @@ Pipecat-specific language mapping and helpers live here.
 API docs: https://docs.gnani.ai/api/introduction/introduction
 """
 
-from gnani.stt.client import (
+from gnani.stt.client import (  # noqa: I001
     SAMPLE_RATE_8K,
     SAMPLE_RATE_16K,
-    STREAM_CHUNK_BYTES,
-    STREAM_SUPPORTED_LANGUAGES,
-    SUPPORTED_LANGUAGES as STT_SUPPORTED_LANGUAGES,
+    STREAM_CHUNK_BYTES,  # noqa: F401
+    STREAM_SUPPORTED_LANGUAGES,  # noqa: F401
+    SUPPORTED_LANGUAGES as STT_SUPPORTED_LANGUAGES,  # noqa: F401
 )
 from gnani.tts.client import (
-    SUPPORTED_BITRATES,
-    SUPPORTED_CONTAINERS,
-    SUPPORTED_ENCODINGS,
-    SUPPORTED_MODELS,
-    SUPPORTED_VOICES,
+    SUPPORTED_BITRATES,  # noqa: F401
+    SUPPORTED_CONTAINERS,  # noqa: F401
+    SUPPORTED_ENCODINGS,  # noqa: F401
+    SUPPORTED_MODELS,  # noqa: F401
+    SUPPORTED_VOICES,  # noqa: F401
 )
 from pipecat.transcriptions.language import Language, resolve_language
 

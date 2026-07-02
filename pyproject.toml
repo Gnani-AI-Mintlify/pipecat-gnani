@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pipecat-gnani"
-version = "0.4.1"
+version = "0.5.0"
 description = "Pipecat service integration for Gnani speech AI — STT & TTS for Indian languages"
 readme = "README.md"
 license = "BSD-2-Clause"
@@ -72,7 +72,11 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "N", "UP", "B", "SIM", "TCH", "RUF"]
-ignore = ["E501"]
+ignore = [
+    "E501",   # line length handled by formatter
+    "B904",   # raise ... from err (pre-existing pattern in exception guards)
+    "SIM105", # contextlib.suppress (pre-existing async cleanup pattern)
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["pipecat_gnani"]

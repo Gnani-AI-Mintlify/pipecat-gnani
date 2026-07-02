@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 
 import aiohttp
 from loguru import logger
-
 from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
@@ -126,9 +125,7 @@ class GnaniHttpSTTService(SegmentedSTTService):
             headers = {"X-API-Key-ID": self._api_key, **sdk_headers()}
 
             form = aiohttp.FormData()
-            form.add_field(
-                "audio_file", audio, filename="audio.wav", content_type="audio/wav"
-            )
+            form.add_field("audio_file", audio, filename="audio.wav", content_type="audio/wav")
             form.add_field("language_code", lang or "en-IN")
 
             fmt = getattr(self._settings, "format", None)
@@ -240,8 +237,7 @@ class GnaniSTTService(STTService):
             and default_settings.format not in STT_SUPPORTED_FORMATS
         ):
             raise ValueError(
-                f"format must be one of {STT_SUPPORTED_FORMATS}, "
-                f"got '{default_settings.format}'"
+                f"format must be one of {STT_SUPPORTED_FORMATS}, got '{default_settings.format}'"
             )
 
         super().__init__(
@@ -291,9 +287,7 @@ class GnaniSTTService(STTService):
                 try:
                     await self._ws.send(audio)
                 except Exception as e2:
-                    yield ErrorFrame(
-                        error=f"Error sending audio to Gnani: {e2}", exception=e2
-                    )
+                    yield ErrorFrame(error=f"Error sending audio to Gnani: {e2}", exception=e2)
 
         yield None
 
@@ -384,7 +378,11 @@ class GnaniSTTService(STTService):
                         )
 
                 elif msg_type in (
-                    "processing", "speech_start", "vad_start", "speech_end", "vad_end",
+                    "processing",
+                    "speech_start",
+                    "vad_start",
+                    "speech_end",
+                    "vad_end",
                 ):
                     pass
 
