@@ -12,10 +12,17 @@ Services:
     - GnaniHttpTTSService: REST-based text-to-speech
     - GnaniSSETTSService: SSE streaming text-to-speech (lower latency)
     - GnaniTTSService: WebSocket streaming text-to-speech with interruption handling
+
+API docs: https://docs.gnani.ai/api/introduction/introduction
 """
 
-__version__ = "0.3.1"
+__version__ = "0.4.1"
 
+from pipecat_gnani._common import (
+    STT_FORMAT_TRANSCRIBE,
+    STT_FORMAT_VERBATIM,
+    SUPPORTED_VOICES,
+)
 from pipecat_gnani.stt import (
     GnaniHttpSTTService,
     GnaniHttpSTTSettings,
@@ -29,7 +36,6 @@ from pipecat_gnani.tts import (
     GnaniSSETTSSettings,
     GnaniTTSService,
     GnaniTTSSettings,
-    SUPPORTED_VOICES,
 )
 
 __all__ = [
@@ -44,5 +50,7 @@ __all__ = [
     "GnaniTTSService",
     "GnaniTTSSettings",
     "SUPPORTED_VOICES",
+    "STT_FORMAT_VERBATIM",
+    "STT_FORMAT_TRANSCRIBE",
     "__version__",
 ]

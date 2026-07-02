@@ -1,8 +1,10 @@
-"""Gnani Vachana Speech-to-Text service implementations.
+"""Gnani Speech-to-Text service implementations.
 
 Services:
 - GnaniHttpSTTService: REST-based file transcription (requires VAD in pipeline)
 - GnaniSTTService: WebSocket streaming transcription with real-time VAD
+
+For API docs see: https://docs.gnani.ai/api/STT/speech-to-text
 """
 
 import asyncio
@@ -21,7 +23,7 @@ from pipecat.frames.frames import (
     StartFrame,
     TranscriptionFrame,
 )
-from pipecat.services.settings import NOT_GIVEN, STTSettings, _NotGiven, is_given
+from pipecat.services.settings import NOT_GIVEN, STTSettings, _NotGiven
 from pipecat.services.stt_service import SegmentedSTTService, STTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
@@ -30,19 +32,20 @@ from pipecat.utils.tracing.service_decorators import traced_stt
 from pipecat_gnani._common import (
     GNANI_STT_REST_URL,
     GNANI_STT_WS_URL,
+    STT_SUPPORTED_FORMATS,
+    STT_SUPPORTED_SAMPLE_RATES,
     get_language_string,
     stt_language_to_gnani,
 )
 from pipecat_gnani._sdk import sdk_headers
 
 try:
-    import websockets
     from websockets.asyncio.client import connect as websocket_connect
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use Gnani Vachana STT, you need to "
-        "`pip install pipecat-gnani` or `pip install websockets gnani-vachana`."
+        "In order to use Gnani STT, you need to "
+        "`pip install pipecat-gnani` or `pip install websockets gnani`."
     )
     raise Exception(f"Missing module: {e}")
 
@@ -54,9 +57,17 @@ except ModuleNotFoundError as e:
 
 @dataclass
 class GnaniHttpSTTSettings(STTSettings):
-    """Settings for GnaniHttpSTTService (REST)."""
+    """Settings for GnaniHttpSTTService (REST).
 
-    pass
+    Parameters:
+        format: 'verbatim' (default) or 'transcribe' (enables ITN).
+        itn_native_numerals: When format='transcribe', render digits in native script.
+        preferred_language: Force single-language model when multiple languages specified.
+    """
+
+    format: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    itn_native_numerals: bool | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    preferred_language: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
 
 class GnaniHttpSTTService(SegmentedSTTService):
@@ -120,6 +131,18 @@ class GnaniHttpSTTService(SegmentedSTTService):
             )
             form.add_field("language_code", lang or "en-IN")
 
+            fmt = getattr(self._settings, "format", None)
+            if fmt and fmt not in (NOT_GIVEN, None):
+                form.add_field("format", fmt)
+
+            preferred = getattr(self._settings, "preferred_language", None)
+            if preferred and preferred not in (NOT_GIVEN, None):
+                form.add_field("preferred_language", preferred)
+
+            itn = getattr(self._settings, "itn_native_numerals", None)
+            if itn and itn not in (NOT_GIVEN, None):
+                form.add_field("itn_native_numerals", str(itn).lower())
+
             async with self._session.post(
                 GNANI_STT_REST_URL, data=form, headers=headers
             ) as response:
@@ -154,16 +177,21 @@ class GnaniSTTSettings(STTSettings):
     """Settings for GnaniSTTService (WebSocket streaming).
 
     Parameters:
-        sample_rate: Audio sample rate (8000 or 16000 Hz).
+        sample_rate: Audio sample rate (8000, 16000, 44100, or 48000 Hz).
+        format: 'verbatim' for raw output, 'transcribe' for ITN-normalized output.
+        itn_native_numerals: When format='transcribe', render digits in native script.
     """
 
     sample_rate: int | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    format: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    itn_native_numerals: bool | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
 
 class GnaniSTTService(STTService):
     """WebSocket streaming speech-to-text service using Gnani Vachana.
 
-    Provides real-time speech recognition for Indian languages.
+    Provides real-time speech recognition for Indian languages via a
+    persistent WebSocket connection to wss://api.vachana.ai/stt/v3/stream.
 
     Event handlers (in addition to STTService events):
 
@@ -194,13 +222,30 @@ class GnaniSTTService(STTService):
         keepalive_interval: float = 5.0,
         **kwargs,
     ):
+        resolved_rate = sample_rate or 16000
+        if resolved_rate not in STT_SUPPORTED_SAMPLE_RATES:
+            raise ValueError(
+                f"sample_rate must be one of {STT_SUPPORTED_SAMPLE_RATES}, got {resolved_rate}"
+            )
+
         default_settings = self.Settings(language=Language.EN_IN)
 
         if settings is not None:
             default_settings.apply_update(settings)
 
+        if (
+            hasattr(default_settings, "format")
+            and default_settings.format
+            and default_settings.format not in (NOT_GIVEN, None)
+            and default_settings.format not in STT_SUPPORTED_FORMATS
+        ):
+            raise ValueError(
+                f"format must be one of {STT_SUPPORTED_FORMATS}, "
+                f"got '{default_settings.format}'"
+            )
+
         super().__init__(
-            sample_rate=sample_rate or 16000,
+            sample_rate=resolved_rate,
             keepalive_timeout=keepalive_timeout,
             keepalive_interval=keepalive_interval,
             settings=default_settings,
@@ -231,13 +276,24 @@ class GnaniSTTService(STTService):
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         if not self._ws:
-            yield None
-            return
+            await self._connect()
+            if not self._ws:
+                yield None
+                return
 
         try:
             await self._ws.send(audio)
         except Exception as e:
-            yield ErrorFrame(error=f"Error sending audio to Gnani: {e}", exception=e)
+            logger.warning(f"Gnani STT send failed, reconnecting: {e}")
+            self._ws = None
+            await self._connect()
+            if self._ws:
+                try:
+                    await self._ws.send(audio)
+                except Exception as e2:
+                    yield ErrorFrame(
+                        error=f"Error sending audio to Gnani: {e2}", exception=e2
+                    )
 
         yield None
 
@@ -249,8 +305,17 @@ class GnaniSTTService(STTService):
             headers = {
                 "x-api-key-id": self._api_key,
                 "lang_code": lang or "en-IN",
+                "x-sample-rate": str(self.sample_rate),
                 **sdk_headers(),
             }
+
+            fmt = getattr(self._settings, "format", None)
+            if fmt and fmt not in (NOT_GIVEN, None):
+                headers["x-format"] = fmt
+
+            itn = getattr(self._settings, "itn_native_numerals", None)
+            if itn and itn not in (NOT_GIVEN, None):
+                headers["itn_native_numerals"] = str(itn).lower()
 
             self._ws = await websocket_connect(
                 GNANI_STT_WS_URL,
@@ -326,10 +391,12 @@ class GnaniSTTService(STTService):
                 elif msg_type == "error":
                     error_msg = data.get("message", "Unknown error")
                     logger.error(f"Gnani STT stream error: {error_msg}")
+                    self._ws = None
                     await self.push_frame(ErrorFrame(error=f"Gnani STT: {error_msg}"))
 
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.error(f"Gnani STT receive error: {e}")
+            self._ws = None
             await self._call_event_handler("on_connection_error", str(e))

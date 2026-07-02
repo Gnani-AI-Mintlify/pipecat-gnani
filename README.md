@@ -13,7 +13,7 @@
 pip install pipecat-gnani
 ```
 
-This will also install the [`gnani-vachana`](https://pypi.org/project/gnani-vachana/) (>= 0.4.4) core SDK as a dependency.
+This will also install the [`gnani`](https://pypi.org/project/gnani/) (>= 0.6.0) core SDK as a dependency.
 
 ## Prerequisites
 
@@ -64,7 +64,6 @@ tts = GnaniHttpTTSService(
     aiohttp_session=session,
     settings=GnaniHttpTTSService.Settings(
         voice="Karan",
-        language="hi-IN",
     ),
 )
 ```
@@ -79,7 +78,6 @@ tts = GnaniSSETTSService(
     aiohttp_session=session,
     settings=GnaniSSETTSService.Settings(
         voice="Karan",
-        language="hi-IN",
     ),
 )
 ```
@@ -93,7 +91,6 @@ tts = GnaniTTSService(
     api_key="your-api-key",
     settings=GnaniTTSService.Settings(
         voice="Karan",
-        language="IND-IN",
     ),
 )
 ```
@@ -106,6 +103,21 @@ tts = GnaniTTSService(
 |---------|-----------|------------|-------------|
 | `GnaniHttpSTTService` | REST POST | `SegmentedSTTService` | File-based transcription via `POST /stt/v3`. Requires VAD in pipeline. |
 | `GnaniSTTService` | WebSocket | `STTService` | Real-time streaming via `wss://api.vachana.ai/stt/v3/stream` with VAD events. |
+
+#### Streaming PCM Specification
+
+All streaming audio must be sent as **raw PCM binary frames** — no container format (WAV, MP3) mid-stream.
+
+| Property          | 16 kHz                                    | 8 kHz                                     |
+|-------------------|-------------------------------------------|-------------------------------------------|
+| Encoding          | PCM signed 16-bit little-endian           | PCM signed 16-bit little-endian           |
+| Sample Rate       | 16,000 Hz                                 | 8,000 Hz                                  |
+| Channels          | 1 (mono)                                  | 1 (mono)                                  |
+| Samples per chunk | 512                                       | 512                                       |
+| **Bytes per frame** | **1,024 bytes** (512 samples × 2 bytes) | **1,024 bytes** (512 samples × 2 bytes)   |
+| Frame duration    | 32 ms                                     | 64 ms                                     |
+
+Frames must be sent at **real-time cadence**. See **[STT Realtime — PCM Specification](https://docs.gnani.ai/api/STT/stt-websocket#pcm-specification)** for full details.
 
 ### TTS Services
 
@@ -156,20 +168,20 @@ For the full list of supported languages, see [TTS — Supported Languages](http
 ## Architecture
 
 ```
-gnani-vachana (>=0.4.4)  ← Core SDK (REST, SSE, WebSocket clients)
+gnani (>=0.6.0)          ← Core SDK (REST, SSE, WebSocket clients)
         ↑
 pipecat-gnani            ← This package (Pipecat service adapters)
   ├── STT: REST + WebSocket
   └── TTS: REST + SSE + WebSocket
 ```
 
-This package wraps the `gnani-vachana` SDK into Pipecat's `SegmentedSTTService`, `STTService`, `TTSService`, and `InterruptibleTTSService` base classes.
+This package wraps the `gnani` SDK into Pipecat's `SegmentedSTTService`, `STTService`, `TTSService`, and `InterruptibleTTSService` base classes.
 
 ## Documentation
 
 - [Gnani API Docs](https://docs.gnani.ai/)
 - [Pipecat Docs](https://docs.pipecat.ai/)
-- [gnani-vachana SDK](https://pypi.org/project/gnani-vachana/)
+- [gnani SDK](https://pypi.org/project/gnani/)
 - [STT REST API](https://docs.gnani.ai/api/STT/speech-to-text)
 - [STT Realtime WebSocket](https://docs.gnani.ai/api/STT/stt-websocket)
 - [TTS REST API](https://docs.gnani.ai/api/TTS/tts-inference)

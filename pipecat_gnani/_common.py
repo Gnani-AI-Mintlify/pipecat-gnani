@@ -1,5 +1,25 @@
-"""Shared constants and helpers for Gnani Vachana Pipecat services."""
+"""Shared constants and helpers for Gnani Pipecat services.
 
+Re-exports constants from the gnani SDK to avoid duplication.
+Pipecat-specific language mapping and helpers live here.
+
+API docs: https://docs.gnani.ai/api/introduction/introduction
+"""
+
+from gnani.stt.client import (
+    SAMPLE_RATE_8K,
+    SAMPLE_RATE_16K,
+    STREAM_CHUNK_BYTES,
+    STREAM_SUPPORTED_LANGUAGES,
+    SUPPORTED_LANGUAGES as STT_SUPPORTED_LANGUAGES,
+)
+from gnani.tts.client import (
+    SUPPORTED_BITRATES,
+    SUPPORTED_CONTAINERS,
+    SUPPORTED_ENCODINGS,
+    SUPPORTED_MODELS,
+    SUPPORTED_VOICES,
+)
 from pipecat.transcriptions.language import Language, resolve_language
 
 GNANI_STT_REST_URL = "https://api.vachana.ai/stt/v3"
@@ -9,26 +29,12 @@ GNANI_TTS_REST_URL = "https://api.vachana.ai/api/v1/tts/inference"
 GNANI_TTS_SSE_URL = "https://api.vachana.ai/api/v1/tts/sse"
 GNANI_TTS_WS_URL = "wss://api.vachana.ai/api/v1/tts"
 
-STT_SUPPORTED_SAMPLE_RATES = (8000, 16000)
+STT_SUPPORTED_SAMPLE_RATES = (SAMPLE_RATE_8K, SAMPLE_RATE_16K, 44100, 48000)
 TTS_SUPPORTED_SAMPLE_RATES = (8000, 16000, 22050, 44100)
 
-STREAM_CHUNK_BYTES = 1024
-
-SUPPORTED_VOICES = frozenset({
-    "Karan", "Simran", "Nara", "Riya", "Viraj", "Raju",
-})
-
-SUPPORTED_LANGUAGES = frozenset({
-    "as-IN", "bn-IN", "en-IN", "gu-IN", "hi-IN", "kn-IN",
-    "ml-IN", "mr-IN", "or-IN", "pa-IN", "ta-IN", "te-IN",
-    "en-IN,hi-IN",
-})
-
-STREAM_SUPPORTED_LANGUAGES = frozenset({
-    "bn-IN", "en-IN", "gu-IN", "hi-IN", "kn-IN",
-    "ml-IN", "mr-IN", "pa-IN", "ta-IN", "te-IN",
-    "en-hi-IN-latn", "en-hi-in-cm",
-})
+STT_FORMAT_VERBATIM = "verbatim"
+STT_FORMAT_TRANSCRIBE = "transcribe"
+STT_SUPPORTED_FORMATS = (STT_FORMAT_VERBATIM, STT_FORMAT_TRANSCRIBE)
 
 STT_LANGUAGE_MAP = {
     Language.AS_IN: "as-IN",
@@ -78,7 +84,7 @@ def stt_language_to_gnani(language: Language) -> str:
     return resolve_language(language, STT_LANGUAGE_MAP, use_base_code=False)
 
 
-def tts_language_to_gnani(language: Language) -> str | None:
+def tts_language_to_gnani(language: Language) -> str:
     """Convert a Language enum to Gnani TTS language code."""
     return resolve_language(language, TTS_LANGUAGE_MAP, use_base_code=False)
 
