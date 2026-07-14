@@ -40,7 +40,13 @@ uv pip install -e ".[example]"
 
 ## Prerequisites
 
-You need a Gnani API key. Email **[speechstack@gnani.ai](mailto:speechstack@gnani.ai)** to get started — all new accounts receive free credits, no credit card required.
+You need a Gnani API key. [Gnani APIs](https://app.gnani.ai/voice) have this.
+
+Set your credentials as environment variables:
+
+```bash
+export GNANI_API_KEY="your-api-key"
+```
 
 ## Quickstart example
 
