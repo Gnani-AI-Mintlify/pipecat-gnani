@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Fixed the SDK dependency name and bumped it to `gnani-vachana>=0.7.1,<1.0`** (was `gnani>=0.6.0,<1.0`). The core SDK is published on PyPI as `gnani-vachana` (the `gnani` distribution does not exist there), so the previous requirement made `pip install pipecat-gnani` unresolvable. The import package remains `gnani`. The bump also picks up the `websockets` 12.x compatibility fix and the additional STT streaming sample rates (44100, 48000 Hz).
 - **PyPI publish** — the publish workflow now also triggers on `v*.*.*` tag pushes (and `workflow_dispatch`), validates that the tag matches the `pyproject.toml` version, and runs `twine check` on the built distribution before uploading.
-- **Release script** — `scripts/release.sh` now promotes an existing `## [Unreleased]` changelog section to the new version (falling back to inserting an empty section) and supports non-interactive pushes via `--push` / `PUSH=1`.
+- **Release script** — `scripts/release.sh` now promotes an existing `## [0.5.4] - 2026-07-14` changelog section to the new version (falling back to inserting an empty section) and supports non-interactive pushes via `--push` / `PUSH=1`.
 
 ## [0.5.1] - 2026-07-02
 
