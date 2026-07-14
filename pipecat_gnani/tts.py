@@ -44,7 +44,7 @@ from pipecat_gnani._common import (
     GNANI_TTS_WS_URL,
     TTS_SUPPORTED_SAMPLE_RATES,
 )
-from pipecat_gnani._sdk import sdk_headers
+from pipecat_gnani._sdk import sdk_headers, ws_header_kwargs
 
 try:
     from websockets.asyncio.client import connect as websocket_connect
@@ -787,7 +787,7 @@ class GnaniTTSService(InterruptibleTTSService):
 
             self._ws = await websocket_connect(
                 GNANI_TTS_WS_URL,
-                additional_headers=headers,
+                **ws_header_kwargs(headers),
                 ping_interval=20,
                 ping_timeout=20,
                 close_timeout=10,

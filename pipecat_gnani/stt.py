@@ -42,7 +42,7 @@ from pipecat_gnani._common import (
     settings_language,
     stt_language_to_gnani,
 )
-from pipecat_gnani._sdk import sdk_headers
+from pipecat_gnani._sdk import sdk_headers, ws_header_kwargs
 
 try:
     from websockets.asyncio.client import connect as websocket_connect
@@ -611,7 +611,7 @@ class GnaniSTTService(STTService):
 
             self._ws = await websocket_connect(
                 GNANI_STT_WS_URL,
-                additional_headers=headers,
+                **ws_header_kwargs(headers),
                 ping_interval=20,
                 ping_timeout=20,
                 close_timeout=10,

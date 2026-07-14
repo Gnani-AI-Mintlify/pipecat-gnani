@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Bumped `gnani-vachana` dependency to `>=0.7.3,<1.0`** (from `>=0.7.2`).
+- **`STT_SUPPORTED_SAMPLE_RATES`** now re-exports `STREAM_SUPPORTED_SAMPLE_RATES` from the SDK (`SAMPLE_RATE_44K`, `SAMPLE_RATE_48K`, etc.) instead of hardcoding `44100` and `48000`.
+- **WebSocket header compatibility** — STT and TTS WebSocket connections use `ws_header_kwargs()` so `additional_headers` (websockets >= 13) and `extra_headers` (< 13) are selected automatically, matching `gnani-vachana` 0.7.2+.
+- **`websockets` lower bound relaxed to `>=12.0`** to align with the core SDK and support environments that pin `websockets < 13`.
+
 ## [0.5.2] - 2026-07-14
 
 ### Changed

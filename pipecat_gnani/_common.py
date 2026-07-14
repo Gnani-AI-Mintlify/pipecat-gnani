@@ -10,10 +10,9 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from gnani.stt.client import (
-    SAMPLE_RATE_8K,
-    SAMPLE_RATE_16K,
     STREAM_CHUNK_BYTES,  # noqa: F401
     STREAM_SUPPORTED_LANGUAGES,  # noqa: F401
+    STREAM_SUPPORTED_SAMPLE_RATES,
 )
 from gnani.stt.client import (
     SUPPORTED_LANGUAGES as STT_SUPPORTED_LANGUAGES,  # noqa: F401
@@ -34,7 +33,7 @@ GNANI_TTS_REST_URL = "https://api.vachana.ai/api/v1/tts/inference"
 GNANI_TTS_SSE_URL = "https://api.vachana.ai/api/v1/tts/sse"
 GNANI_TTS_WS_URL = "wss://api.vachana.ai/api/v1/tts"
 
-STT_SUPPORTED_SAMPLE_RATES = (SAMPLE_RATE_8K, SAMPLE_RATE_16K, 44100, 48000)
+STT_SUPPORTED_SAMPLE_RATES = STREAM_SUPPORTED_SAMPLE_RATES
 TTS_SUPPORTED_SAMPLE_RATES = (8000, 16000, 22050, 44100)
 
 STT_FORMAT_VERBATIM = "verbatim"
