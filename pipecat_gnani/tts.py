@@ -1,13 +1,15 @@
-"""Gnani text-to-speech service implementations.
-
-**Voices:** Karan (default), Simran, Nara, Riya, Viraj, Raju, Pranav, Kaveri, Shubhra, Deepak
+"""Gnani Text-to-Speech service implementations.
 
 Services:
-- GnaniHttpTTSService: REST-based single-request synthesis
-- GnaniSSETTSService: SSE streaming synthesis (lower latency than REST)
-- GnaniTTSService: WebSocket streaming synthesis with interruption handling
 
-For API docs see: https://docs.gnani.ai/api/TTS/tts-inference
+- GnaniHttpTTSService — REST-based single-request synthesis
+- GnaniSSETTSService — SSE streaming synthesis (lower latency)
+- GnaniTTSService — WebSocket streaming synthesis with interruption handling
+
+Voices: Pranav (default), Kaveri, Shubhra, Deepak.
+See https://docs.gnani.ai/api/TTS/tts-sse#available-voices
+
+API docs: https://docs.gnani.ai/api/TTS/tts-inference
 """
 
 import asyncio
@@ -15,9 +17,13 @@ import base64
 import json
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 import aiohttp
-from gnani.tts.client import _strip_wav_header, _validate_voice
+from gnani.tts.client import (  # type: ignore[import-untyped]
+    _strip_wav_header,
+    _validate_voice,
+)
 from loguru import logger
 from pipecat.frames.frames import (
     CancelFrame,
@@ -28,7 +34,7 @@ from pipecat.frames.frames import (
     TTSAudioRawFrame,
     TTSStoppedFrame,
 )
-from pipecat.services.settings import NOT_GIVEN, TTSSettings, _NotGiven
+from pipecat.services.settings import NOT_GIVEN, TTSSettings, _NotGiven, is_given
 from pipecat.services.tts_service import InterruptibleTTSService, TTSService
 from pipecat.utils.tracing.service_decorators import traced_tts
 
@@ -51,6 +57,13 @@ except ModuleNotFoundError as e:
     raise Exception(f"Missing module: {e}")
 
 
+_DEFAULT_TTS_SAMPLE_RATE = 16000
+
+_TTS_HANDLED_SETTINGS = frozenset(
+    {"voice", "model", "language", "encoding", "container", "sample_width", "bitrate"}
+)
+
+
 def _build_audio_config(settings, sample_rate: int) -> dict:
     config: dict = {
         "sample_rate": sample_rate,
@@ -63,6 +76,21 @@ def _build_audio_config(settings, sample_rate: int) -> dict:
     if bitrate and bitrate not in (NOT_GIVEN, None):
         config["bitrate"] = bitrate
     return config
+
+
+def _validate_sample_rate(sample_rate: int | None, *, supported: tuple[int, ...]) -> None:
+    if sample_rate is not None and sample_rate not in supported:
+        raise ValueError(f"sample_rate must be one of {supported}, got {sample_rate}")
+
+
+def _resolved_tts_sample_rate(service: TTSService) -> int:
+    rate = service.sample_rate
+    if rate in TTS_SUPPORTED_SAMPLE_RATES:
+        return rate
+    init_rate = service._init_sample_rate
+    if init_rate in TTS_SUPPORTED_SAMPLE_RATES:
+        return init_rate
+    return _DEFAULT_TTS_SAMPLE_RATE
 
 
 # ---------------------------------------------------------------------------
@@ -89,14 +117,20 @@ class GnaniHttpTTSSettings(TTSSettings):
 
 @dataclass
 class GnaniSSETTSSettings(GnaniHttpTTSSettings):
-    """Settings for GnaniSSETTSService (SSE streaming)."""
+    """Settings for GnaniSSETTSService (SSE streaming).
+
+    Inherits all parameters from :class:`GnaniHttpTTSSettings`.
+    """
 
     pass
 
 
 @dataclass
 class GnaniTTSSettings(GnaniHttpTTSSettings):
-    """Settings for GnaniTTSService (WebSocket streaming)."""
+    """Settings for GnaniTTSService (WebSocket streaming).
+
+    Inherits all parameters from :class:`GnaniHttpTTSSettings`.
+    """
 
     pass
 
@@ -118,13 +152,13 @@ class GnaniHttpTTSService(TTSService):
             api_key="your-api-key",
             aiohttp_session=session,
             settings=GnaniHttpTTSService.Settings(
-                voice="Karan",
+                voice="Pranav",
             ),
         )
     """
 
     Settings = GnaniHttpTTSSettings
-    _settings: Settings
+    _settings: GnaniHttpTTSSettings
 
     def __init__(
         self,
@@ -134,18 +168,26 @@ class GnaniHttpTTSService(TTSService):
         voice_id: str | None = None,
         model: str = "vachana-voice-v3",
         sample_rate: int | None = None,
-        settings: Settings | None = None,
+        settings: GnaniHttpTTSSettings | None = None,
         **kwargs,
     ):
-        resolved_rate = sample_rate or 16000
-        if resolved_rate not in TTS_SUPPORTED_SAMPLE_RATES:
-            raise ValueError(
-                f"sample_rate must be one of {TTS_SUPPORTED_SAMPLE_RATES}, got {resolved_rate}"
-            )
+        """Initialize the Gnani REST TTS service.
+
+        Args:
+            api_key: Gnani Vachana API key for authentication.
+            aiohttp_session: Shared aiohttp session for HTTP requests.
+            voice_id: Default voice name (Pranav, Kaveri, Shubhra, or Deepak).
+            model: TTS model identifier.
+            sample_rate: Optional output sample rate override. When omitted, negotiated from
+                ``StartFrame``.
+            settings: Runtime-updatable TTS settings (voice, model, audio format).
+            **kwargs: Additional arguments passed to the parent TTSService.
+        """
+        _validate_sample_rate(sample_rate, supported=TTS_SUPPORTED_SAMPLE_RATES)
 
         default_settings = self.Settings(
             model=model,
-            voice=voice_id or "Karan",
+            voice=voice_id or "Pranav",
             encoding="linear_pcm",
             container="wav",
             sample_width=2,
@@ -156,7 +198,7 @@ class GnaniHttpTTSService(TTSService):
         _validate_voice(default_settings.voice)
 
         super().__init__(
-            sample_rate=resolved_rate,
+            sample_rate=sample_rate,
             push_stop_frames=True,
             push_start_frame=True,
             settings=default_settings,
@@ -166,19 +208,67 @@ class GnaniHttpTTSService(TTSService):
         self._api_key = api_key
         self._session = aiohttp_session
 
+    async def start(self, frame: StartFrame):
+        """Start the service and resolve the output sample rate.
+
+        Args:
+            frame: Pipeline start frame with negotiated audio parameters.
+        """
+        await super().start(frame)
+        self._sample_rate = _resolved_tts_sample_rate(self)
+
     def can_generate_metrics(self) -> bool:
+        """Return whether this service can emit TTS metrics.
+
+        Returns:
+            True — metrics are supported for REST synthesis.
+        """
         return True
+
+    async def _update_settings(self, delta: TTSSettings) -> dict[str, Any]:  # type: ignore[override]
+        """Apply runtime TTS settings for the next synthesis request.
+
+        Args:
+            delta: Settings delta from a ``TTSUpdateSettingsFrame``.
+
+        Returns:
+            Dict mapping changed field names to their previous values.
+
+        Raises:
+            ValueError: If ``voice`` is not a supported Gnani voice.
+        """
+        changed = await super()._update_settings(delta)
+
+        if "voice" in changed and is_given(self._settings.voice):
+            _validate_voice(self._settings.voice)
+
+        unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
+        if unhandled:
+            self._warn_unhandled_updated_settings(unhandled)
+
+        return changed
 
     @traced_tts
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+        """Synthesize speech via the Gnani REST TTS API.
+
+        Args:
+            text: Text to synthesize.
+            context_id: Pipeline context identifier for this utterance.
+
+        Yields:
+            TTSAudioRawFrame on success. ``TTSTextFrame`` is emitted by the base class
+            after synthesis completes. ErrorFrame on failure.
+        """
         logger.debug(f"{self}: Generating TTS [{text}]")
 
         try:
+            rate = _resolved_tts_sample_rate(self)
             payload = {
                 "text": text,
-                "voice": self._settings.voice or "Karan",
+                "voice": self._settings.voice or "Pranav",
                 "model": self._settings.model or "vachana-voice-v3",
-                "audio_config": _build_audio_config(self._settings, self.sample_rate),
+                "audio_config": _build_audio_config(self._settings, rate),
             }
             headers = {
                 "X-API-Key-ID": self._api_key,
@@ -191,7 +281,9 @@ class GnaniHttpTTSService(TTSService):
             ) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    yield ErrorFrame(error=f"Gnani TTS API error: {error_text}")
+                    msg = f"Gnani TTS API error: {error_text}"
+                    await self.push_error(error_msg=msg)
+                    yield ErrorFrame(error=msg)
                     return
                 audio_data = await response.read()
 
@@ -200,12 +292,13 @@ class GnaniHttpTTSService(TTSService):
 
             yield TTSAudioRawFrame(
                 audio=audio_data,
-                sample_rate=self.sample_rate,
+                sample_rate=rate,
                 num_channels=1,
                 context_id=context_id,
             )
 
         except Exception as e:
+            await self.push_error(error_msg=f"Error generating TTS: {e}", exception=e)
             yield ErrorFrame(error=f"Error generating TTS: {e}", exception=e)
         finally:
             await self.stop_ttfb_metrics()
@@ -229,13 +322,13 @@ class GnaniSSETTSService(TTSService):
             api_key="your-api-key",
             aiohttp_session=session,
             settings=GnaniSSETTSService.Settings(
-                voice="Karan",
+                voice="Pranav",
             ),
         )
     """
 
     Settings = GnaniSSETTSSettings
-    _settings: Settings
+    _settings: GnaniSSETTSSettings
 
     def __init__(
         self,
@@ -245,18 +338,26 @@ class GnaniSSETTSService(TTSService):
         voice_id: str | None = None,
         model: str = "vachana-voice-v3",
         sample_rate: int | None = None,
-        settings: Settings | None = None,
+        settings: GnaniSSETTSSettings | None = None,
         **kwargs,
     ):
-        resolved_rate = sample_rate or 16000
-        if resolved_rate not in TTS_SUPPORTED_SAMPLE_RATES:
-            raise ValueError(
-                f"sample_rate must be one of {TTS_SUPPORTED_SAMPLE_RATES}, got {resolved_rate}"
-            )
+        """Initialize the Gnani SSE streaming TTS service.
+
+        Args:
+            api_key: Gnani Vachana API key for authentication.
+            aiohttp_session: Shared aiohttp session for HTTP requests.
+            voice_id: Default voice name (Pranav, Kaveri, Shubhra, or Deepak).
+            model: TTS model identifier.
+            sample_rate: Optional output sample rate override. When omitted, negotiated from
+                ``StartFrame``.
+            settings: Runtime-updatable TTS settings (voice, model, audio format).
+            **kwargs: Additional arguments passed to the parent TTSService.
+        """
+        _validate_sample_rate(sample_rate, supported=TTS_SUPPORTED_SAMPLE_RATES)
 
         default_settings = self.Settings(
             model=model,
-            voice=voice_id or "Karan",
+            voice=voice_id or "Pranav",
             encoding="linear_pcm",
             container="wav",
             sample_width=2,
@@ -267,7 +368,7 @@ class GnaniSSETTSService(TTSService):
         _validate_voice(default_settings.voice)
 
         super().__init__(
-            sample_rate=resolved_rate,
+            sample_rate=sample_rate,
             push_stop_frames=True,
             push_start_frame=True,
             settings=default_settings,
@@ -277,19 +378,67 @@ class GnaniSSETTSService(TTSService):
         self._api_key = api_key
         self._session = aiohttp_session
 
+    async def start(self, frame: StartFrame):
+        """Start the service and resolve the output sample rate.
+
+        Args:
+            frame: Pipeline start frame with negotiated audio parameters.
+        """
+        await super().start(frame)
+        self._sample_rate = _resolved_tts_sample_rate(self)
+
     def can_generate_metrics(self) -> bool:
+        """Return whether this service can emit TTS metrics.
+
+        Returns:
+            True — metrics are supported for SSE streaming synthesis.
+        """
         return True
+
+    async def _update_settings(self, delta: TTSSettings) -> dict[str, Any]:  # type: ignore[override]
+        """Apply runtime TTS settings for the next synthesis request.
+
+        Args:
+            delta: Settings delta from a ``TTSUpdateSettingsFrame``.
+
+        Returns:
+            Dict mapping changed field names to their previous values.
+
+        Raises:
+            ValueError: If ``voice`` is not a supported Gnani voice.
+        """
+        changed = await super()._update_settings(delta)
+
+        if "voice" in changed and is_given(self._settings.voice):
+            _validate_voice(self._settings.voice)
+
+        unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
+        if unhandled:
+            self._warn_unhandled_updated_settings(unhandled)
+
+        return changed
 
     @traced_tts
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+        """Stream synthesized speech via the Gnani SSE TTS API.
+
+        Args:
+            text: Text to synthesize.
+            context_id: Pipeline context identifier for this utterance.
+
+        Yields:
+            TTSAudioRawFrame chunks as they arrive. ``TTSTextFrame`` is emitted by the base
+            class after streaming completes. ErrorFrame on failure.
+        """
         logger.debug(f"{self}: Streaming SSE TTS [{text}]")
 
         try:
+            rate = _resolved_tts_sample_rate(self)
             payload = {
                 "text": text,
-                "voice": self._settings.voice or "Karan",
+                "voice": self._settings.voice or "Pranav",
                 "model": self._settings.model or "vachana-voice-v3",
-                "audio_config": _build_audio_config(self._settings, self.sample_rate),
+                "audio_config": _build_audio_config(self._settings, rate),
             }
             headers = {
                 "X-API-Key-ID": self._api_key,
@@ -302,7 +451,9 @@ class GnaniSSETTSService(TTSService):
             ) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    yield ErrorFrame(error=f"Gnani TTS SSE error: {error_text}")
+                    msg = f"Gnani TTS SSE error: {error_text}"
+                    await self.push_error(error_msg=msg)
+                    yield ErrorFrame(error=msg)
                     return
 
                 await self.start_tts_usage_metrics(text)
@@ -333,7 +484,7 @@ class GnaniSSETTSService(TTSService):
                             await self.stop_ttfb_metrics()
                             yield TTSAudioRawFrame(
                                 audio=audio_bytes,
-                                sample_rate=self.sample_rate,
+                                sample_rate=rate,
                                 num_channels=1,
                                 context_id=context_id,
                             )
@@ -365,7 +516,7 @@ class GnaniSSETTSService(TTSService):
                                 await self.stop_ttfb_metrics()
                                 yield TTSAudioRawFrame(
                                     audio=audio_bytes,
-                                    sample_rate=self.sample_rate,
+                                    sample_rate=rate,
                                     num_channels=1,
                                     context_id=context_id,
                                 )
@@ -373,6 +524,7 @@ class GnaniSSETTSService(TTSService):
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            await self.push_error(error_msg=f"Error in SSE TTS: {e}", exception=e)
             yield ErrorFrame(error=f"Error in SSE TTS: {e}", exception=e)
         finally:
             await self.stop_ttfb_metrics()
@@ -395,13 +547,13 @@ class GnaniTTSService(InterruptibleTTSService):
         tts = GnaniTTSService(
             api_key="your-api-key",
             settings=GnaniTTSService.Settings(
-                voice="Karan",
+                voice="Pranav",
             ),
         )
     """
 
     Settings = GnaniTTSSettings
-    _settings: Settings
+    _settings: GnaniTTSSettings
 
     def __init__(
         self,
@@ -410,18 +562,25 @@ class GnaniTTSService(InterruptibleTTSService):
         voice_id: str | None = None,
         model: str = "vachana-voice-v3",
         sample_rate: int | None = None,
-        settings: Settings | None = None,
+        settings: GnaniTTSSettings | None = None,
         **kwargs,
     ):
-        resolved_rate = sample_rate or 16000
-        if resolved_rate not in TTS_SUPPORTED_SAMPLE_RATES:
-            raise ValueError(
-                f"sample_rate must be one of {TTS_SUPPORTED_SAMPLE_RATES}, got {resolved_rate}"
-            )
+        """Initialize the Gnani WebSocket streaming TTS service.
+
+        Args:
+            api_key: Gnani Vachana API key for authentication.
+            voice_id: Default voice name (Pranav, Kaveri, Shubhra, or Deepak).
+            model: TTS model identifier.
+            sample_rate: Optional output sample rate override. When omitted, negotiated from
+                ``StartFrame``.
+            settings: Runtime-updatable TTS settings (voice, model, audio format).
+            **kwargs: Additional arguments passed to the parent InterruptibleTTSService.
+        """
+        _validate_sample_rate(sample_rate, supported=TTS_SUPPORTED_SAMPLE_RATES)
 
         default_settings = self.Settings(
             model=model,
-            voice=voice_id or "Karan",
+            voice=voice_id or "Pranav",
             encoding="linear_pcm",
             container="wav",
             sample_width=2,
@@ -432,7 +591,7 @@ class GnaniTTSService(InterruptibleTTSService):
         _validate_voice(default_settings.voice)
 
         super().__init__(
-            sample_rate=resolved_rate,
+            sample_rate=sample_rate,
             push_stop_frames=True,
             push_start_frame=True,
             settings=default_settings,
@@ -444,39 +603,116 @@ class GnaniTTSService(InterruptibleTTSService):
         self._receive_task = None
         self._bot_speaking = False
         self._awaiting_first_chunk = False
+        self._teardown_done = False
 
     def can_generate_metrics(self) -> bool:
+        """Return whether this service can emit TTS metrics.
+
+        Returns:
+            True — metrics are supported for WebSocket streaming synthesis.
+        """
         return True
 
+    async def _update_settings(self, delta: TTSSettings) -> dict[str, Any]:  # type: ignore[override]
+        """Apply runtime TTS settings for the next synthesis request.
+
+        Voice, model, and audio-format settings take effect on the next ``run_tts`` call
+        without reconnecting the WebSocket.
+
+        Args:
+            delta: Settings delta from a ``TTSUpdateSettingsFrame``.
+
+        Returns:
+            Dict mapping changed field names to their previous values.
+
+        Raises:
+            ValueError: If ``voice`` is not a supported Gnani voice.
+        """
+        changed = await super()._update_settings(delta)
+
+        if "voice" in changed and is_given(self._settings.voice):
+            _validate_voice(self._settings.voice)
+
+        unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
+        if unhandled:
+            self._warn_unhandled_updated_settings(unhandled)
+
+        return changed
+
     async def start(self, frame: StartFrame):
+        """Start the service and open the Gnani WebSocket connection.
+
+        Args:
+            frame: Pipeline start frame with negotiated audio parameters.
+        """
         await super().start(frame)
+        self._sample_rate = _resolved_tts_sample_rate(self)
+        self._teardown_done = False
         await self._connect_websocket()
 
     async def stop(self, frame: EndFrame):
+        """Stop the service and tear down the WebSocket connection.
+
+        Args:
+            frame: Pipeline end frame.
+        """
         await super().stop(frame)
-        await self._disconnect_websocket()
+        await self._teardown()
 
     async def cancel(self, frame: CancelFrame):
+        """Cancel the service and tear down the WebSocket connection.
+
+        Args:
+            frame: Pipeline cancel frame.
+        """
         await super().cancel(frame)
+        await self._teardown()
+
+    async def cleanup(self):
+        """Release WebSocket resources regardless of prior stop/cancel."""
+        await super().cleanup()
+        await self._teardown()
+
+    async def _teardown(self):
+        """Close the WebSocket and cancel the receive task.
+
+        Idempotent so it can run from ``stop()``, ``cancel()``, and
+        ``cleanup()`` without duplicating teardown work.
+        """
+        if self._teardown_done:
+            return
+        self._teardown_done = True
         await self._disconnect_websocket()
 
     @traced_tts
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+        """Send a synthesis request over the Gnani WebSocket TTS connection.
+
+        Args:
+            text: Text to synthesize.
+            context_id: Pipeline context identifier for this utterance.
+
+        Yields:
+            ``None`` after sending the request; audio arrives via ``_receive_messages``.
+            ``TTSTextFrame`` is emitted by the base class after synthesis completes.
+        """
         logger.debug(f"{self}: Streaming TTS [{text}]")
 
         if not self._ws:
             await self._connect_websocket()
 
         if not self._ws:
+            await self.push_error(error_msg="Gnani TTS WebSocket not connected")
             yield ErrorFrame(error="Gnani TTS WebSocket not connected")
             return
 
         try:
+            rate = _resolved_tts_sample_rate(self)
             request_body = {
                 "text": text,
-                "voice": self._settings.voice or "Karan",
+                "voice": self._settings.voice or "Pranav",
                 "model": self._settings.model or "vachana-voice-v3",
-                "audio_config": _build_audio_config(self._settings, self.sample_rate),
+                "audio_config": _build_audio_config(self._settings, rate),
             }
 
             self._bot_speaking = True
@@ -485,6 +721,7 @@ class GnaniTTSService(InterruptibleTTSService):
             await self.start_tts_usage_metrics(text)
 
         except Exception as e:
+            await self.push_error(error_msg=f"Error sending TTS request: {e}", exception=e)
             yield ErrorFrame(error=f"Error sending TTS request: {e}", exception=e)
 
         yield None
@@ -518,6 +755,7 @@ class GnaniTTSService(InterruptibleTTSService):
         except Exception as e:
             logger.error(f"Failed to connect to Gnani TTS: {e}")
             self._ws = None
+            await self.push_error(error_msg=f"Failed to connect to Gnani TTS: {e}", exception=e)
             await self._call_event_handler("on_connection_error", f"{e}")
 
     async def _disconnect_websocket(self):
@@ -547,13 +785,21 @@ class GnaniTTSService(InterruptibleTTSService):
                 data = json.loads(msg)
                 msg_type = data.get("type", "")
 
+                # The server nests the base64 audio under "data": {"audio": ...};
+                # fall back to a top-level "audio" for forward compatibility.
+                def _audio_b64(payload: dict) -> str:
+                    nested = payload.get("data")
+                    if isinstance(nested, dict) and nested.get("audio"):
+                        return cast("str", nested["audio"])
+                    return cast("str", payload.get("audio", ""))
+
                 if msg_type == "audio":
-                    audio_b64 = data.get("audio", "")
+                    audio_b64 = _audio_b64(data)
                     if audio_b64:
                         await self._handle_audio_chunk(base64.b64decode(audio_b64))
 
                 elif msg_type == "complete":
-                    audio_b64 = data.get("audio", "")
+                    audio_b64 = _audio_b64(data)
                     if audio_b64:
                         await self._handle_audio_chunk(base64.b64decode(audio_b64))
                     self._bot_speaking = False
@@ -563,13 +809,14 @@ class GnaniTTSService(InterruptibleTTSService):
                     error_msg = data.get("message", "Unknown error")
                     logger.error(f"Gnani TTS stream error: {error_msg}")
                     self._bot_speaking = False
-                    await self.push_frame(ErrorFrame(error=f"Gnani TTS: {error_msg}"))
+                    await self.push_error(error_msg=f"Gnani TTS: {error_msg}")
 
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.error(f"Gnani TTS receive error: {e}")
             self._bot_speaking = False
+            await self.push_error(error_msg=f"Gnani TTS receive error: {e}", exception=e)
             await self._call_event_handler("on_connection_error", f"{e}")
 
     async def _handle_audio_chunk(self, audio_bytes: bytes):
@@ -581,7 +828,7 @@ class GnaniTTSService(InterruptibleTTSService):
             await self.push_frame(
                 TTSAudioRawFrame(
                     audio=audio_bytes,
-                    sample_rate=self.sample_rate,
+                    sample_rate=_resolved_tts_sample_rate(self),
                     num_channels=1,
                 )
             )

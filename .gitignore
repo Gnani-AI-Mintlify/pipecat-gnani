@@ -1,3 +1,37 @@
+# ---------------------------------------------------------------------------
+# Repo policy: only `pipecat_gnani/` is versioned on GitHub (same as the PyPI wheel).
+# Everything else is local dev tooling or publish scaffolding listed below.
+# ---------------------------------------------------------------------------
+
+# Ignore everything at repo root by default
+/*
+
+# Published package (the only product code on GitHub / PyPI)
+!/pipecat_gnani/
+!/pipecat_gnani/**
+
+!pyproject.toml
+!README.md
+!LICENSE
+!CHANGELOG.md
+!examples/
+!examples/**
+!.env.example
+!.gitignore
+!.github/
+!.github/workflows/
+!.github/workflows/workflow.yml
+
+# --- Local dev only  ---
+tests/
+scripts/
+Makefile
+DEVELOPMENT.md
+uv.lock
+.github/workflows/ci.yml
+tests/output/
+
+# --- Standard Python / tooling artifacts ---
 __pycache__/
 *.py[cod]
 *$py.class
@@ -15,6 +49,7 @@ env/
 
 .env
 .env.*
+!.env.example
 
 *.log
 .mypy_cache/
@@ -31,8 +66,3 @@ htmlcov/
 *~
 .DS_Store
 Thumbs.db
-
-# Dev tooling (not shipped with package)
-tests/
-Makefile
-scripts/
