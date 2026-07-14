@@ -64,6 +64,30 @@ _TTS_HANDLED_SETTINGS = frozenset(
 )
 
 
+class _Pcm16Aligner:
+    """Ensure emitted PCM chunks contain whole 16-bit samples.
+
+    Streaming TTS endpoints may chop audio at arbitrary byte boundaries, so a
+    chunk can end mid-sample. Dangling bytes are held back and prepended to
+    the next chunk so downstream int16 consumers (e.g. SOXR resamplers) never
+    see odd-length buffers.
+    """
+
+    def __init__(self) -> None:
+        self._remainder = b""
+
+    def reset(self) -> None:
+        """Discard any held-back bytes (e.g. at the start of a new utterance)."""
+        self._remainder = b""
+
+    def align(self, audio: bytes) -> bytes:
+        """Return whole 16-bit samples, holding back any dangling byte."""
+        audio = self._remainder + audio
+        aligned_len = len(audio) - (len(audio) % 2)
+        self._remainder = audio[aligned_len:]
+        return audio[:aligned_len]
+
+
 def _build_audio_config(settings, sample_rate: int) -> dict:
     config: dict = {
         "sample_rate": sample_rate,
@@ -135,6 +159,24 @@ class GnaniTTSSettings(GnaniHttpTTSSettings):
     pass
 
 
+def _default_tts_settings(
+    settings_cls: type[GnaniHttpTTSSettings],
+    *,
+    model: str,
+    voice: str,
+) -> GnaniHttpTTSSettings:
+    """Build a store-mode settings object with every field explicitly set."""
+    return settings_cls(
+        model=model,
+        voice=voice,
+        encoding="linear_pcm",
+        container="wav",
+        sample_width=2,
+        language=None,
+        bitrate=None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # REST TTS
 # ---------------------------------------------------------------------------
@@ -185,12 +227,10 @@ class GnaniHttpTTSService(TTSService):
         """
         _validate_sample_rate(sample_rate, supported=TTS_SUPPORTED_SAMPLE_RATES)
 
-        default_settings = self.Settings(
+        default_settings = _default_tts_settings(
+            self.Settings,
             model=model,
             voice=voice_id or "Pranav",
-            encoding="linear_pcm",
-            container="wav",
-            sample_width=2,
         )
         if settings is not None:
             default_settings.apply_update(settings)
@@ -207,6 +247,7 @@ class GnaniHttpTTSService(TTSService):
 
         self._api_key = api_key
         self._session = aiohttp_session
+        self._pcm_aligner = _Pcm16Aligner()
 
     async def start(self, frame: StartFrame):
         """Start the service and resolve the output sample rate.
@@ -263,6 +304,7 @@ class GnaniHttpTTSService(TTSService):
         logger.debug(f"{self}: Generating TTS [{text}]")
 
         try:
+            self._pcm_aligner.reset()
             rate = _resolved_tts_sample_rate(self)
             payload = {
                 "text": text,
@@ -288,14 +330,15 @@ class GnaniHttpTTSService(TTSService):
                 audio_data = await response.read()
 
             await self.start_tts_usage_metrics(text)
-            audio_data = _strip_wav_header(audio_data)
+            audio_data = self._pcm_aligner.align(_strip_wav_header(audio_data))
 
-            yield TTSAudioRawFrame(
-                audio=audio_data,
-                sample_rate=rate,
-                num_channels=1,
-                context_id=context_id,
-            )
+            if audio_data:
+                yield TTSAudioRawFrame(
+                    audio=audio_data,
+                    sample_rate=rate,
+                    num_channels=1,
+                    context_id=context_id,
+                )
 
         except Exception as e:
             await self.push_error(error_msg=f"Error generating TTS: {e}", exception=e)
@@ -355,12 +398,10 @@ class GnaniSSETTSService(TTSService):
         """
         _validate_sample_rate(sample_rate, supported=TTS_SUPPORTED_SAMPLE_RATES)
 
-        default_settings = self.Settings(
+        default_settings = _default_tts_settings(
+            self.Settings,
             model=model,
             voice=voice_id or "Pranav",
-            encoding="linear_pcm",
-            container="wav",
-            sample_width=2,
         )
         if settings is not None:
             default_settings.apply_update(settings)
@@ -377,6 +418,7 @@ class GnaniSSETTSService(TTSService):
 
         self._api_key = api_key
         self._session = aiohttp_session
+        self._pcm_aligner = _Pcm16Aligner()
 
     async def start(self, frame: StartFrame):
         """Start the service and resolve the output sample rate.
@@ -433,6 +475,7 @@ class GnaniSSETTSService(TTSService):
         logger.debug(f"{self}: Streaming SSE TTS [{text}]")
 
         try:
+            self._pcm_aligner.reset()
             rate = _resolved_tts_sample_rate(self)
             payload = {
                 "text": text,
@@ -477,7 +520,9 @@ class GnaniSSETTSService(TTSService):
                         if not data_str:
                             continue
                         try:
-                            audio_bytes = _strip_wav_header(base64.b64decode(data_str))
+                            audio_bytes = self._pcm_aligner.align(
+                                _strip_wav_header(base64.b64decode(data_str))
+                            )
                         except Exception:
                             continue
                         if audio_bytes:
@@ -511,7 +556,9 @@ class GnaniSSETTSService(TTSService):
                             return
                         audio_b64 = data.get("audio", "")
                         if audio_b64:
-                            audio_bytes = _strip_wav_header(base64.b64decode(audio_b64))
+                            audio_bytes = self._pcm_aligner.align(
+                                _strip_wav_header(base64.b64decode(audio_b64))
+                            )
                             if audio_bytes:
                                 await self.stop_ttfb_metrics()
                                 yield TTSAudioRawFrame(
@@ -578,12 +625,10 @@ class GnaniTTSService(InterruptibleTTSService):
         """
         _validate_sample_rate(sample_rate, supported=TTS_SUPPORTED_SAMPLE_RATES)
 
-        default_settings = self.Settings(
+        default_settings = _default_tts_settings(
+            self.Settings,
             model=model,
             voice=voice_id or "Pranav",
-            encoding="linear_pcm",
-            container="wav",
-            sample_width=2,
         )
         if settings is not None:
             default_settings.apply_update(settings)
@@ -604,6 +649,7 @@ class GnaniTTSService(InterruptibleTTSService):
         self._bot_speaking = False
         self._awaiting_first_chunk = False
         self._teardown_done = False
+        self._pcm_aligner = _Pcm16Aligner()
 
     def can_generate_metrics(self) -> bool:
         """Return whether this service can emit TTS metrics.
@@ -717,6 +763,7 @@ class GnaniTTSService(InterruptibleTTSService):
 
             self._bot_speaking = True
             self._awaiting_first_chunk = True
+            self._pcm_aligner.reset()
             await self._ws.send(json.dumps(request_body))
             await self.start_tts_usage_metrics(text)
 
@@ -820,7 +867,7 @@ class GnaniTTSService(InterruptibleTTSService):
             await self._call_event_handler("on_connection_error", f"{e}")
 
     async def _handle_audio_chunk(self, audio_bytes: bytes):
-        audio_bytes = _strip_wav_header(audio_bytes)
+        audio_bytes = self._pcm_aligner.align(_strip_wav_header(audio_bytes))
         if audio_bytes:
             if self._awaiting_first_chunk:
                 self._awaiting_first_chunk = False

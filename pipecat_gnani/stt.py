@@ -125,6 +125,21 @@ class GnaniHttpSTTSettings(STTSettings):
     preferred_language: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
 
+def _default_http_stt_settings(
+    settings_cls: type[GnaniHttpSTTSettings],
+    *,
+    language: Language = Language.EN_IN,
+) -> GnaniHttpSTTSettings:
+    """Build a store-mode settings object with every field explicitly set."""
+    return settings_cls(
+        model=None,
+        language=language,
+        format=None,
+        itn_native_numerals=None,
+        preferred_language=None,
+    )
+
+
 class GnaniHttpSTTService(SegmentedSTTService):
     """REST-based speech-to-text service using Gnani Vachana API.
 
@@ -162,7 +177,7 @@ class GnaniHttpSTTService(SegmentedSTTService):
             settings: Runtime-updatable STT settings (language, format, ITN options).
             **kwargs: Additional arguments passed to the parent SegmentedSTTService.
         """
-        default_settings = self.Settings(language=Language.EN_IN)
+        default_settings = _default_http_stt_settings(self.Settings)
 
         if settings is not None:
             default_settings.apply_update(settings)
@@ -291,6 +306,21 @@ class GnaniSTTSettings(STTSettings):
     itn_native_numerals: bool | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
 
+def _default_ws_stt_settings(
+    settings_cls: type[GnaniSTTSettings],
+    *,
+    language: Language = Language.EN_IN,
+) -> GnaniSTTSettings:
+    """Build a store-mode settings object with every field explicitly set."""
+    return settings_cls(
+        model=None,
+        language=language,
+        sample_rate=None,
+        format=None,
+        itn_native_numerals=None,
+    )
+
+
 class GnaniSTTService(STTService):
     """WebSocket streaming speech-to-text service using Gnani Vachana.
 
@@ -342,7 +372,7 @@ class GnaniSTTService(STTService):
                 f"sample_rate must be one of {STT_SUPPORTED_SAMPLE_RATES}, got {sample_rate}"
             )
 
-        default_settings = self.Settings(language=Language.EN_IN)
+        default_settings = _default_ws_stt_settings(self.Settings)
 
         if settings is not None:
             default_settings.apply_update(settings)
