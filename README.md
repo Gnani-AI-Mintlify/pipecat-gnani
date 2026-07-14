@@ -243,22 +243,9 @@ Frames must be sent at **real-time cadence**. See **[STT Realtime — PCM Specif
 
 ### STT Languages (Speech-to-Text)
 
-STT uses BCP-47 locale codes (e.g. `hi-IN`).
+STT uses BCP-47 locale codes (e.g. `hi-IN`, `bn-IN`). Note: STT uses the **`-IN`** suffix (unlike TTS).
 
-| Language        | Code    |
-|-----------------|---------|
-| Assamese        | `as-IN` |
-| Bengali         | `bn-IN` |
-| English (India) | `en-IN` |
-| Gujarati        | `gu-IN` |
-| Hindi           | `hi-IN` |
-| Kannada         | `kn-IN` |
-| Malayalam       | `ml-IN` |
-| Marathi         | `mr-IN` |
-| Odia            | `or-IN` |
-| Punjabi         | `pa-IN` |
-| Tamil           | `ta-IN` |
-| Telugu          | `te-IN` |
+For the full list of supported languages, see [STT — Supported Languages](https://docs.gnani.ai/api/STT/speech-to-text#supported-languages).
 
 ### TTS Languages (Text-to-Speech)
 
