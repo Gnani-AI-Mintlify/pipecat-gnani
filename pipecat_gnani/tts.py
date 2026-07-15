@@ -6,7 +6,7 @@ Services:
 - GnaniSSETTSService — SSE streaming synthesis (lower latency)
 - GnaniTTSService — WebSocket streaming synthesis with interruption handling
 
-Voices: Pranav (default), Kaveri, Shubhra, Deepak.
+Voices: Pranav (default), Kaveri, Shubhra, Deepak for timbre-v2.0; 42 voices for timbre-v2.5.
 See https://docs.gnani.ai/api/TTS/tts-sse#available-voices
 
 API docs: https://docs.gnani.ai/api/TTS/tts-inference
@@ -21,7 +21,10 @@ from typing import Any, cast
 
 import aiohttp
 from gnani.tts.client import (  # type: ignore[import-untyped]
+    DEFAULT_MODEL,
     _strip_wav_header,
+    _validate_model,
+    _validate_timbre_options,
     _validate_voice,
 )
 from loguru import logger
@@ -36,6 +39,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.services.settings import NOT_GIVEN, TTSSettings, _NotGiven, is_given
 from pipecat.services.tts_service import InterruptibleTTSService, TTSService
+from pipecat.transcriptions.language import Language
 from pipecat.utils.tracing.service_decorators import traced_tts
 
 from pipecat_gnani._common import (
@@ -43,6 +47,7 @@ from pipecat_gnani._common import (
     GNANI_TTS_SSE_URL,
     GNANI_TTS_WS_URL,
     TTS_SUPPORTED_SAMPLE_RATES,
+    tts_language_to_gnani,
 )
 from pipecat_gnani._sdk import sdk_headers, ws_header_kwargs
 
@@ -115,6 +120,58 @@ def _resolved_tts_sample_rate(service: TTSService) -> int:
     if init_rate in TTS_SUPPORTED_SAMPLE_RATES:
         return init_rate
     return _DEFAULT_TTS_SAMPLE_RATE
+
+
+def _optional_tts_language_code(settings) -> str | None:
+    lang = settings.language
+    if lang is None or lang is NOT_GIVEN:
+        return None
+    if isinstance(lang, Language):
+        return tts_language_to_gnani(lang)
+    return str(lang) if lang else None
+
+
+def _settings_voice(settings) -> str | None:
+    voice = settings.voice
+    if not is_given(voice) or voice is None:
+        return None
+    return str(voice)
+
+
+def _settings_model(settings) -> str:
+    model = settings.model
+    if not is_given(model) or model is None:
+        return cast("str", DEFAULT_MODEL)
+    return cast("str", model)
+
+
+def _validate_tts_settings(voice: str | None, model: str, language: str | None = None) -> None:
+    _validate_model(model)
+    _validate_timbre_options(model, language=language)
+    _validate_voice(voice, model)
+
+
+def _build_tts_payload(text: str, settings, sample_rate: int) -> dict:
+    model = _settings_model(settings)
+    language = _optional_tts_language_code(settings)
+    _validate_tts_settings(_settings_voice(settings), model, language)
+    payload = {
+        "text": text,
+        "voice": _settings_voice(settings) or "Pranav",
+        "model": model,
+        "audio_config": _build_audio_config(settings, sample_rate),
+    }
+    if model == "timbre-v2.5" and language is not None:
+        payload["language"] = language
+    return payload
+
+
+def _apply_tts_settings_update(service) -> None:
+    model = _settings_model(service._settings)
+    language = _optional_tts_language_code(service._settings)
+    voice = _settings_voice(service._settings)
+    if voice is not None:
+        _validate_tts_settings(voice, model, language)
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +265,7 @@ class GnaniHttpTTSService(TTSService):
         api_key: str,
         aiohttp_session: aiohttp.ClientSession,
         voice_id: str | None = None,
-        model: str = "vachana-voice-v3",
+        model: str = DEFAULT_MODEL,
         sample_rate: int | None = None,
         settings: GnaniHttpTTSSettings | None = None,
         **kwargs,
@@ -235,7 +292,11 @@ class GnaniHttpTTSService(TTSService):
         if settings is not None:
             default_settings.apply_update(settings)
 
-        _validate_voice(default_settings.voice)
+        _validate_tts_settings(
+            _settings_voice(default_settings),
+            _settings_model(default_settings),
+            _optional_tts_language_code(default_settings),
+        )
 
         super().__init__(
             sample_rate=sample_rate,
@@ -280,8 +341,8 @@ class GnaniHttpTTSService(TTSService):
         """
         changed = await super()._update_settings(delta)
 
-        if "voice" in changed and is_given(self._settings.voice):
-            _validate_voice(self._settings.voice)
+        if any(k in changed for k in ("voice", "model", "language")):
+            _apply_tts_settings_update(self)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
         if unhandled:
@@ -306,12 +367,7 @@ class GnaniHttpTTSService(TTSService):
         try:
             self._pcm_aligner.reset()
             rate = _resolved_tts_sample_rate(self)
-            payload = {
-                "text": text,
-                "voice": self._settings.voice or "Pranav",
-                "model": self._settings.model or "vachana-voice-v3",
-                "audio_config": _build_audio_config(self._settings, rate),
-            }
+            payload = _build_tts_payload(text, self._settings, rate)
             headers = {
                 "X-API-Key-ID": self._api_key,
                 "Content-Type": "application/json",
@@ -379,7 +435,7 @@ class GnaniSSETTSService(TTSService):
         api_key: str,
         aiohttp_session: aiohttp.ClientSession,
         voice_id: str | None = None,
-        model: str = "vachana-voice-v3",
+        model: str = DEFAULT_MODEL,
         sample_rate: int | None = None,
         settings: GnaniSSETTSSettings | None = None,
         **kwargs,
@@ -406,7 +462,11 @@ class GnaniSSETTSService(TTSService):
         if settings is not None:
             default_settings.apply_update(settings)
 
-        _validate_voice(default_settings.voice)
+        _validate_tts_settings(
+            _settings_voice(default_settings),
+            _settings_model(default_settings),
+            _optional_tts_language_code(default_settings),
+        )
 
         super().__init__(
             sample_rate=sample_rate,
@@ -451,8 +511,8 @@ class GnaniSSETTSService(TTSService):
         """
         changed = await super()._update_settings(delta)
 
-        if "voice" in changed and is_given(self._settings.voice):
-            _validate_voice(self._settings.voice)
+        if any(k in changed for k in ("voice", "model", "language")):
+            _apply_tts_settings_update(self)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
         if unhandled:
@@ -477,12 +537,7 @@ class GnaniSSETTSService(TTSService):
         try:
             self._pcm_aligner.reset()
             rate = _resolved_tts_sample_rate(self)
-            payload = {
-                "text": text,
-                "voice": self._settings.voice or "Pranav",
-                "model": self._settings.model or "vachana-voice-v3",
-                "audio_config": _build_audio_config(self._settings, rate),
-            }
+            payload = _build_tts_payload(text, self._settings, rate)
             headers = {
                 "X-API-Key-ID": self._api_key,
                 "Content-Type": "application/json",
@@ -607,7 +662,7 @@ class GnaniTTSService(InterruptibleTTSService):
         *,
         api_key: str,
         voice_id: str | None = None,
-        model: str = "vachana-voice-v3",
+        model: str = DEFAULT_MODEL,
         sample_rate: int | None = None,
         settings: GnaniTTSSettings | None = None,
         **kwargs,
@@ -633,7 +688,11 @@ class GnaniTTSService(InterruptibleTTSService):
         if settings is not None:
             default_settings.apply_update(settings)
 
-        _validate_voice(default_settings.voice)
+        _validate_tts_settings(
+            _settings_voice(default_settings),
+            _settings_model(default_settings),
+            _optional_tts_language_code(default_settings),
+        )
 
         super().__init__(
             sample_rate=sample_rate,
@@ -676,8 +735,8 @@ class GnaniTTSService(InterruptibleTTSService):
         """
         changed = await super()._update_settings(delta)
 
-        if "voice" in changed and is_given(self._settings.voice):
-            _validate_voice(self._settings.voice)
+        if any(k in changed for k in ("voice", "model", "language")):
+            _apply_tts_settings_update(self)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
         if unhandled:
@@ -754,12 +813,7 @@ class GnaniTTSService(InterruptibleTTSService):
 
         try:
             rate = _resolved_tts_sample_rate(self)
-            request_body = {
-                "text": text,
-                "voice": self._settings.voice or "Pranav",
-                "model": self._settings.model or "vachana-voice-v3",
-                "audio_config": _build_audio_config(self._settings, rate),
-            }
+            request_body = _build_tts_payload(text, self._settings, rate)
 
             self._bot_speaking = True
             self._awaiting_first_chunk = True

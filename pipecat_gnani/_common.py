@@ -18,11 +18,15 @@ from gnani.stt.client import (
     SUPPORTED_LANGUAGES as STT_SUPPORTED_LANGUAGES,  # noqa: F401
 )
 from gnani.tts.client import (  # type: ignore[import-untyped]
+    DEFAULT_MODEL,  # noqa: F401
     SUPPORTED_BITRATES,  # noqa: F401
     SUPPORTED_CONTAINERS,  # noqa: F401
     SUPPORTED_ENCODINGS,  # noqa: F401
     SUPPORTED_MODELS,  # noqa: F401
+    SUPPORTED_TTS_LANGUAGES,  # noqa: F401
     SUPPORTED_VOICES,  # noqa: F401
+    TIMBRE_V20_VOICES,  # noqa: F401
+    TIMBRE_V25_VOICES,  # noqa: F401
 )
 from pipecat.transcriptions.language import Language, resolve_language
 

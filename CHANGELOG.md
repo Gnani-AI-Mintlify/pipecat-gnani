@@ -5,9 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.8] - 2026-07-16
+
+### Changed
+
+- **BREAKING:** Default TTS model renamed from `vachana-voice-v3` to `timbre-v2.0` (requires `gnani-vachana>=0.7.7`).
+- **`timbre-v2.5` support** — 42 voices with optional `language` in settings (timbre-v2.5 only; included in REST/SSE/WebSocket payloads).
+- **Model-aware voice validation** via SDK `_validate_voice(voice, model)`.
+- **Re-exported Timbre constants** — `DEFAULT_MODEL`, `TIMBRE_V20_VOICES`, `TIMBRE_V25_VOICES`, `SUPPORTED_TTS_LANGUAGES`.
+- **WebSocket TTS uses `timbre-v2.0` directly** — removed `_wire_tts_model` mapping to `vachana-voice-v3`; REST, SSE, and WebSocket payloads now share the same model names.
+- **Bumped `gnani-vachana` dependency to `>=0.7.7,<1.0`**.
+
 ## [0.5.7] - 2026-07-15
 
-## [0.5.6] - 2026-07-14
 
 ### Removed
 
