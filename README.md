@@ -5,7 +5,7 @@
 
 [Pipecat](https://github.com/pipecat-ai/pipecat) service integration for **[Gnani](https://gnani.ai/)** — high-accuracy Speech-to-Text and low-latency Text-to-Speech for Indian languages.
 
-> **Gnani** is a production-ready speech AI platform supporting 10+ Indian languages, real-time streaming, multilingual transcription, and code-switching capabilities.
+> **Gnani** is a production-ready speech AI platform supporting 10+ Indian languages, real-time streaming, and multilingual transcription.
 
 > This integration is maintained by [Gnani.ai](https://gnani.ai/).
 

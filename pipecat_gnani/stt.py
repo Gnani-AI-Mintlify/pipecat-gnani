@@ -117,12 +117,10 @@ class GnaniHttpSTTSettings(STTSettings):
     Parameters:
         format: 'verbatim' (default) or 'transcribe' (enables ITN).
         itn_native_numerals: When format='transcribe', render digits in native script.
-        preferred_language: Force single-language model when multiple languages specified.
     """
 
     format: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
     itn_native_numerals: bool | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    preferred_language: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
 
 def _default_http_stt_settings(
@@ -136,7 +134,6 @@ def _default_http_stt_settings(
         language=language,
         format=None,
         itn_native_numerals=None,
-        preferred_language=None,
     )
 
 
@@ -247,10 +244,6 @@ class GnaniHttpSTTService(SegmentedSTTService):
             fmt = getattr(self._settings, "format", None)
             if fmt and fmt not in (NOT_GIVEN, None):
                 form.add_field("format", fmt)
-
-            preferred = getattr(self._settings, "preferred_language", None)
-            if preferred and preferred not in (NOT_GIVEN, None):
-                form.add_field("preferred_language", preferred)
 
             itn = getattr(self._settings, "itn_native_numerals", None)
             if itn and itn not in (NOT_GIVEN, None):

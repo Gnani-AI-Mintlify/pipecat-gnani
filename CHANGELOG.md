@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.6] - 2026-07-14
 
+### Removed
+
+- **`GnaniHttpSTTSettings.preferred_language`** — code-switching is no longer supported; use a single BCP-47 `language` per request.
+
 ## [0.5.5] - 2026-07-14
 
 ## [0.5.3] - 2026-07-14
@@ -111,7 +115,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** Default voice changed from `sia` to `Karan`.
 - Bumped `gnani-vachana` dependency to `>=0.4.3,<1.0`.
 - Added Assamese (`as-IN`) and Odia (`or-IN`) to both STT and TTS language maps.
-- Added Hinglish experimental language codes (`en-hi-IN-latn`, `en-hi-in-cm`) to STT supported languages.
 - Added `processing` to handled STT WebSocket event types.
 - Updated documentation with complete service matrix (2 STT + 3 TTS) and full Vachana API doc links.
 
