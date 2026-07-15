@@ -16,7 +16,7 @@ Services:
 API docs: https://docs.gnani.ai/api/introduction/introduction
 """
 
-__version__ = "0.5.6"
+__version__ = "0.5.7"
 from pipecat_gnani._common import (
     STT_FORMAT_TRANSCRIBE,
     STT_FORMAT_VERBATIM,
