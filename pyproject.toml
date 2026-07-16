@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pipecat-gnani"
-version = "0.5.8"
+version = "0.5.9"
 description = "Pipecat service integration for Gnani speech AI — STT & TTS for Indian languages"
 readme = "README.md"
 license = "BSD-2-Clause"
@@ -108,6 +108,7 @@ warn_unused_configs = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["tests"]
 markers = [
     "integration: marks tests requiring live API (deselect with '-m not integration')",
     "slow: marks slow tests (deselect with '-m not slow')",

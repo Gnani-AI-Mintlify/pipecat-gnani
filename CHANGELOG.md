@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.9] - 2026-07-16
+
+### Fixed
+
+- **TTS click/tick at segment start** — Gnani streaming sends a 44-byte WAV header (often with zero PCM) as the first chunk of each utterance, then raw PCM continuations. The SDK `_strip_wav_header` only stripped when `len(data) > 44`, so header-only first chunks were emitted as audio and sounded like a click at every segment boundary. Added a local `_strip_wav_header` (matching `livekit-plugins-gnani`) and `_TtsPcmProcessor` to buffer split headers across network chunks. Applies to HTTP, SSE, and WebSocket TTS.
+
 ## [0.5.8] - 2026-07-16
 
 ### Changed

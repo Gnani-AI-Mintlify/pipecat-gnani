@@ -15,6 +15,7 @@ API docs: https://docs.gnani.ai/api/TTS/tts-inference
 import asyncio
 import base64
 import json
+import struct
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -22,7 +23,6 @@ from typing import Any, cast
 import aiohttp
 from gnani.tts.client import (  # type: ignore[import-untyped]
     DEFAULT_MODEL,
-    _strip_wav_header,
     _validate_model,
     _validate_timbre_options,
     _validate_voice,
@@ -63,10 +63,36 @@ except ModuleNotFoundError as e:
 
 
 _DEFAULT_TTS_SAMPLE_RATE = 16000
+_WAV_HEADER_SIZE = 44
 
 _TTS_HANDLED_SETTINGS = frozenset(
     {"voice", "model", "language", "encoding", "container", "sample_width", "bitrate"}
 )
+
+
+def _strip_wav_header(data: bytes) -> bytes:
+    """Strip a RIFF/WAV container if present, returning only PCM samples.
+
+    Gnani streaming sends the WAV header as the first chunk (often with zero
+    PCM bytes) and then raw PCM continuations without per-chunk headers. The
+    SDK helper only strips when ``len(data) > 44``, so a header-only first
+    chunk is emitted as audio and sounds like a click at segment start.
+    """
+    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return data
+
+    offset = 12
+    while offset + 8 <= len(data):
+        chunk_id = data[offset : offset + 4]
+        chunk_size = struct.unpack_from("<I", data, offset + 4)[0]
+        if chunk_id == b"data":
+            data_start = offset + 8
+            return data[data_start : data_start + chunk_size]
+        offset += 8 + chunk_size
+
+    if len(data) <= _WAV_HEADER_SIZE:
+        return b""
+    return data[_WAV_HEADER_SIZE:]
 
 
 class _Pcm16Aligner:
@@ -91,6 +117,40 @@ class _Pcm16Aligner:
         aligned_len = len(audio) - (len(audio) % 2)
         self._remainder = audio[aligned_len:]
         return audio[:aligned_len]
+
+
+class _TtsPcmProcessor:
+    """Strip WAV containers and align PCM for one streaming utterance.
+
+    Gnani streaming may deliver a WAV header as the first chunk (sometimes
+    with no PCM) and then raw PCM continuations. Headers can also arrive
+    split across network chunks. This processor buffers partial headers,
+    strips complete containers, and keeps 16-bit sample alignment.
+    """
+
+    def __init__(self) -> None:
+        self._aligner = _Pcm16Aligner()
+        self._wav_pending = b""
+
+    def reset(self) -> None:
+        """Reset state at the start of a new synthesis request."""
+        self._aligner.reset()
+        self._wav_pending = b""
+
+    def process(self, audio: bytes) -> bytes:
+        """Return aligned PCM ready to emit, or ``b\"\"`` when more data is needed."""
+        if self._wav_pending or (len(audio) >= 4 and audio[:4] == b"RIFF"):
+            buf = self._wav_pending + audio
+            self._wav_pending = b""
+
+            if buf[:4] == b"RIFF" and len(buf) < _WAV_HEADER_SIZE:
+                self._wav_pending = buf
+                return b""
+
+            pcm = _strip_wav_header(buf)
+            return self._aligner.align(pcm)
+
+        return self._aligner.align(audio)
 
 
 def _build_audio_config(settings, sample_rate: int) -> dict:
@@ -308,7 +368,7 @@ class GnaniHttpTTSService(TTSService):
 
         self._api_key = api_key
         self._session = aiohttp_session
-        self._pcm_aligner = _Pcm16Aligner()
+        self._pcm_processor = _TtsPcmProcessor()
 
     async def start(self, frame: StartFrame):
         """Start the service and resolve the output sample rate.
@@ -365,7 +425,7 @@ class GnaniHttpTTSService(TTSService):
         logger.debug(f"{self}: Generating TTS [{text}]")
 
         try:
-            self._pcm_aligner.reset()
+            self._pcm_processor.reset()
             rate = _resolved_tts_sample_rate(self)
             payload = _build_tts_payload(text, self._settings, rate)
             headers = {
@@ -386,7 +446,7 @@ class GnaniHttpTTSService(TTSService):
                 audio_data = await response.read()
 
             await self.start_tts_usage_metrics(text)
-            audio_data = self._pcm_aligner.align(_strip_wav_header(audio_data))
+            audio_data = self._pcm_processor.process(audio_data)
 
             if audio_data:
                 yield TTSAudioRawFrame(
@@ -478,7 +538,7 @@ class GnaniSSETTSService(TTSService):
 
         self._api_key = api_key
         self._session = aiohttp_session
-        self._pcm_aligner = _Pcm16Aligner()
+        self._pcm_processor = _TtsPcmProcessor()
 
     async def start(self, frame: StartFrame):
         """Start the service and resolve the output sample rate.
@@ -535,7 +595,7 @@ class GnaniSSETTSService(TTSService):
         logger.debug(f"{self}: Streaming SSE TTS [{text}]")
 
         try:
-            self._pcm_aligner.reset()
+            self._pcm_processor.reset()
             rate = _resolved_tts_sample_rate(self)
             payload = _build_tts_payload(text, self._settings, rate)
             headers = {
@@ -575,8 +635,8 @@ class GnaniSSETTSService(TTSService):
                         if not data_str:
                             continue
                         try:
-                            audio_bytes = self._pcm_aligner.align(
-                                _strip_wav_header(base64.b64decode(data_str))
+                            audio_bytes = self._pcm_processor.process(
+                                base64.b64decode(data_str)
                             )
                         except Exception:
                             continue
@@ -611,8 +671,8 @@ class GnaniSSETTSService(TTSService):
                             return
                         audio_b64 = data.get("audio", "")
                         if audio_b64:
-                            audio_bytes = self._pcm_aligner.align(
-                                _strip_wav_header(base64.b64decode(audio_b64))
+                            audio_bytes = self._pcm_processor.process(
+                                base64.b64decode(audio_b64)
                             )
                             if audio_bytes:
                                 await self.stop_ttfb_metrics()
@@ -708,7 +768,7 @@ class GnaniTTSService(InterruptibleTTSService):
         self._bot_speaking = False
         self._awaiting_first_chunk = False
         self._teardown_done = False
-        self._pcm_aligner = _Pcm16Aligner()
+        self._pcm_processor = _TtsPcmProcessor()
 
     def can_generate_metrics(self) -> bool:
         """Return whether this service can emit TTS metrics.
@@ -817,7 +877,7 @@ class GnaniTTSService(InterruptibleTTSService):
 
             self._bot_speaking = True
             self._awaiting_first_chunk = True
-            self._pcm_aligner.reset()
+            self._pcm_processor.reset()
             await self._ws.send(json.dumps(request_body))
             await self.start_tts_usage_metrics(text)
 
@@ -921,7 +981,7 @@ class GnaniTTSService(InterruptibleTTSService):
             await self._call_event_handler("on_connection_error", f"{e}")
 
     async def _handle_audio_chunk(self, audio_bytes: bytes):
-        audio_bytes = self._pcm_aligner.align(_strip_wav_header(audio_bytes))
+        audio_bytes = self._pcm_processor.process(audio_bytes)
         if audio_bytes:
             if self._awaiting_first_chunk:
                 self._awaiting_first_chunk = False
