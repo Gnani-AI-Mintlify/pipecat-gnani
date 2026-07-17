@@ -635,9 +635,7 @@ class GnaniSSETTSService(TTSService):
                         if not data_str:
                             continue
                         try:
-                            audio_bytes = self._pcm_processor.process(
-                                base64.b64decode(data_str)
-                            )
+                            audio_bytes = self._pcm_processor.process(base64.b64decode(data_str))
                         except Exception:
                             continue
                         if audio_bytes:
@@ -671,9 +669,7 @@ class GnaniSSETTSService(TTSService):
                             return
                         audio_b64 = data.get("audio", "")
                         if audio_b64:
-                            audio_bytes = self._pcm_processor.process(
-                                base64.b64decode(audio_b64)
-                            )
+                            audio_bytes = self._pcm_processor.process(base64.b64decode(audio_b64))
                             if audio_bytes:
                                 await self.stop_ttfb_metrics()
                                 yield TTSAudioRawFrame(
