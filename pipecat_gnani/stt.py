@@ -42,7 +42,7 @@ from pipecat_gnani._common import (
     settings_language,
     stt_language_to_gnani,
 )
-from pipecat_gnani._sdk import sdk_headers, ws_header_kwargs
+from pipecat_gnani._sdk import _generate_request_id, sdk_headers, ws_header_kwargs
 
 try:
     from websockets.asyncio.client import connect as websocket_connect
@@ -225,12 +225,18 @@ class GnaniHttpSTTService(SegmentedSTTService):
         Yields:
             TranscriptionFrame on success, ErrorFrame on API or network failure.
         """
+        request_id = _generate_request_id()
         try:
             await self.start_processing_metrics()
 
             lang = get_language_string(self._settings, stt_language_to_gnani)
 
-            headers = {"X-API-Key-ID": self._api_key, **sdk_headers()}
+            headers = {"X-API-Key-ID": self._api_key, **sdk_headers(request_id=request_id)}
+            logger.debug(
+                "[STT HTTP] transcribe start | request_id={} | language={}",
+                request_id,
+                lang,
+            )
 
             # pipecat delivers raw PCM; the REST endpoint decodes an audio file.
             # Wrap PCM in a WAV header unless the caller already passed a WAV.
@@ -255,6 +261,11 @@ class GnaniHttpSTTService(SegmentedSTTService):
                 if response.status != 200:
                     error_text = await response.text()
                     msg = f"Gnani STT API error: {error_text}"
+                    logger.error(
+                        "[STT HTTP] transcribe failed | request_id={} | error={}",
+                        request_id,
+                        msg,
+                    )
                     await self.push_error(error_msg=msg)
                     yield ErrorFrame(error=msg)
                     return
@@ -263,6 +274,11 @@ class GnaniHttpSTTService(SegmentedSTTService):
             await self.stop_processing_metrics()
 
             text = result.get("transcript", "").strip()
+            logger.debug(
+                "[STT HTTP] transcribe complete | request_id={} | transcript_length={}",
+                request_id,
+                len(text),
+            )
             if text:
                 lang = settings_language(self._settings)
                 await self._handle_transcription(text, True, lang)
@@ -275,6 +291,11 @@ class GnaniHttpSTTService(SegmentedSTTService):
                 )
 
         except Exception as e:
+            logger.error(
+                "[STT HTTP] transcribe failed | request_id={} | error={}",
+                request_id,
+                str(e),
+            )
             await self.push_error(error_msg=f"Error transcribing audio: {e}", exception=e)
             yield ErrorFrame(error=f"Error transcribing audio: {e}", exception=e)
 
@@ -392,6 +413,7 @@ class GnaniSTTService(STTService):
         self._ws = None
         self._receive_task = None
         self._teardown_done = False
+        self._request_id: str | None = None
 
     def language_to_service_language(self, language: Language) -> str:
         """Convert a Language enum to a Gnani STT language code.
@@ -568,7 +590,11 @@ class GnaniSTTService(STTService):
         try:
             await self._ws.send(audio)
         except Exception as e:
-            logger.warning(f"Gnani STT send failed, reconnecting: {e}")
+            logger.warning(
+                "[STT WS] send failed, reconnecting | request_id={} | error={}",
+                self._request_id,
+                str(e),
+            )
             self._ws = None
             await self._connect()
             if self._ws:
@@ -583,7 +609,9 @@ class GnaniSTTService(STTService):
         yield None
 
     async def _connect(self):
-        logger.debug("Connecting to Gnani Vachana STT")
+        request_id = _generate_request_id()
+        self._request_id = request_id
+        logger.debug("[STT WS] connect | request_id={}", request_id)
 
         try:
             lang = get_language_string(self._settings, stt_language_to_gnani)
@@ -591,6 +619,7 @@ class GnaniSTTService(STTService):
                 "x-api-key-id": self._api_key,
                 "lang_code": lang or "en-IN",
                 "x-sample-rate": str(self._resolve_sample_rate()),
+                "x-api-request-id": request_id,
                 **sdk_headers(),
             }
 
@@ -613,9 +642,17 @@ class GnaniSTTService(STTService):
             connected_msg = await asyncio.wait_for(self._ws.recv(), timeout=10)
             connected_data = json.loads(connected_msg)
             if connected_data.get("type") == "connected":
-                logger.info(f"Gnani STT connected: {connected_data.get('message', '')}")
+                logger.info(
+                    "[STT WS] connected | request_id={} | message={}",
+                    request_id,
+                    connected_data.get("message", ""),
+                )
             else:
-                logger.warning(f"Unexpected first message from Gnani STT: {connected_data}")
+                logger.warning(
+                    "[STT WS] unexpected first message | request_id={} | data={}",
+                    request_id,
+                    connected_data,
+                )
 
             self._receive_task = asyncio.create_task(
                 self._receive_messages(), name="gnani-stt-recv"
@@ -624,7 +661,11 @@ class GnaniSTTService(STTService):
             await self._call_event_handler("on_connected")
 
         except Exception as e:
-            logger.error(f"Failed to connect to Gnani STT: {e}")
+            logger.error(
+                "[STT WS] connect failed | request_id={} | error={}",
+                request_id,
+                str(e),
+            )
             self._ws = None
             await self.push_error(error_msg=f"Failed to connect to Gnani STT: {e}", exception=e)
             await self._call_event_handler("on_connection_error", str(e))
@@ -659,6 +700,11 @@ class GnaniSTTService(STTService):
                 if msg_type == "transcript":
                     text = data.get("text", "")
                     if text:
+                        logger.debug(
+                            "[STT WS] transcript | request_id={} | text={}",
+                            self._request_id,
+                            text[:50],
+                        )
                         # Gnani currently sends final transcripts only; honour is_final when present.
                         is_final = data.get("is_final", True)
                         lang = settings_language(self._settings)
@@ -680,14 +726,22 @@ class GnaniSTTService(STTService):
 
                 elif msg_type == "error":
                     error_msg = data.get("message", "Unknown error")
-                    logger.error(f"Gnani STT stream error: {error_msg}")
+                    logger.error(
+                        "[STT WS] stream error | request_id={} | error={}",
+                        self._request_id,
+                        error_msg,
+                    )
                     self._ws = None
                     await self.push_error(error_msg=f"Gnani STT: {error_msg}")
 
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"Gnani STT receive error: {e}")
+            logger.error(
+                "[STT WS] receive error | request_id={} | error={}",
+                self._request_id,
+                str(e),
+            )
             self._ws = None
             await self.push_error(error_msg=f"Gnani STT receive error: {e}", exception=e)
             await self._call_event_handler("on_connection_error", str(e))

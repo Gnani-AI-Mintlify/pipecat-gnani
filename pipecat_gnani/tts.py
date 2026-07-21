@@ -49,7 +49,7 @@ from pipecat_gnani._common import (
     TTS_SUPPORTED_SAMPLE_RATES,
     tts_language_to_gnani,
 )
-from pipecat_gnani._sdk import sdk_headers, ws_header_kwargs
+from pipecat_gnani._sdk import _generate_request_id, sdk_headers, ws_header_kwargs
 
 try:
     from websockets.asyncio.client import connect as websocket_connect
@@ -244,10 +244,10 @@ class GnaniHttpTTSSettings(TTSSettings):
     """Settings for GnaniHttpTTSService and GnaniSSETTSService.
 
     Parameters:
-        encoding: Audio encoding (linear_pcm or oggopus).
-        container: Audio container (raw, mp3, wav, mulaw, ogg).
+        encoding: Audio encoding (linear_pcm, oggopus, pcm_mulaw, pcm_alaw).
+        container: Audio container (raw, mp3, wav, ogg, mulaw, alaw).
         sample_width: Sample width in bytes (1-4). Defaults to 2.
-        bitrate: MP3 bitrate (96k, 128k, 192k). Only used when container=mp3.
+        bitrate: MP3 bitrate (32k, 64k, 96k, 128k, 192k). Only used when container=mp3.
     """
 
     encoding: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
@@ -422,7 +422,12 @@ class GnaniHttpTTSService(TTSService):
             TTSAudioRawFrame on success. ``TTSTextFrame`` is emitted by the base class
             after synthesis completes. ErrorFrame on failure.
         """
-        logger.debug(f"{self}: Generating TTS [{text}]")
+        request_id = _generate_request_id()
+        logger.debug(
+            "[TTS HTTP] synthesize start | request_id={} | text_length={}",
+            request_id,
+            len(text),
+        )
 
         try:
             self._pcm_processor.reset()
@@ -431,7 +436,7 @@ class GnaniHttpTTSService(TTSService):
             headers = {
                 "X-API-Key-ID": self._api_key,
                 "Content-Type": "application/json",
-                **sdk_headers(),
+                **sdk_headers(request_id=request_id),
             }
 
             async with self._session.post(
@@ -440,6 +445,11 @@ class GnaniHttpTTSService(TTSService):
                 if response.status != 200:
                     error_text = await response.text()
                     msg = f"Gnani TTS API error: {error_text}"
+                    logger.error(
+                        "[TTS HTTP] synthesize failed | request_id={} | error={}",
+                        request_id,
+                        msg,
+                    )
                     await self.push_error(error_msg=msg)
                     yield ErrorFrame(error=msg)
                     return
@@ -449,6 +459,11 @@ class GnaniHttpTTSService(TTSService):
             audio_data = self._pcm_processor.process(audio_data)
 
             if audio_data:
+                logger.debug(
+                    "[TTS HTTP] synthesize complete | request_id={} | audio_length={}",
+                    request_id,
+                    len(audio_data),
+                )
                 yield TTSAudioRawFrame(
                     audio=audio_data,
                     sample_rate=rate,
@@ -457,6 +472,11 @@ class GnaniHttpTTSService(TTSService):
                 )
 
         except Exception as e:
+            logger.error(
+                "[TTS HTTP] synthesize failed | request_id={} | error={}",
+                request_id,
+                str(e),
+            )
             await self.push_error(error_msg=f"Error generating TTS: {e}", exception=e)
             yield ErrorFrame(error=f"Error generating TTS: {e}", exception=e)
         finally:
@@ -592,7 +612,8 @@ class GnaniSSETTSService(TTSService):
             TTSAudioRawFrame chunks as they arrive. ``TTSTextFrame`` is emitted by the base
             class after streaming completes. ErrorFrame on failure.
         """
-        logger.debug(f"{self}: Streaming SSE TTS [{text}]")
+        request_id = _generate_request_id()
+        logger.debug("[TTS SSE] synthesize start | request_id={}", request_id)
 
         try:
             self._pcm_processor.reset()
@@ -601,7 +622,7 @@ class GnaniSSETTSService(TTSService):
             headers = {
                 "X-API-Key-ID": self._api_key,
                 "Content-Type": "application/json",
-                **sdk_headers(),
+                **sdk_headers(request_id=request_id),
             }
 
             async with self._session.post(
@@ -610,6 +631,11 @@ class GnaniSSETTSService(TTSService):
                 if response.status != 200:
                     error_text = await response.text()
                     msg = f"Gnani TTS SSE error: {error_text}"
+                    logger.error(
+                        "[TTS SSE] synthesize failed | request_id={} | error={}",
+                        request_id,
+                        msg,
+                    )
                     await self.push_error(error_msg=msg)
                     yield ErrorFrame(error=msg)
                     return
@@ -648,6 +674,10 @@ class GnaniSSETTSService(TTSService):
                             )
 
                     elif current_event == "completed":
+                        logger.debug(
+                            "[TTS SSE] synthesize complete | request_id={}",
+                            request_id,
+                        )
                         return
 
                     elif current_event == "error":
@@ -656,6 +686,11 @@ class GnaniSSETTSService(TTSService):
                             msg = err_data.get("message", data_str)
                         except (json.JSONDecodeError, ValueError):
                             msg = data_str
+                        logger.error(
+                            "[TTS SSE] synthesize failed | request_id={} | error={}",
+                            request_id,
+                            msg,
+                        )
                         yield ErrorFrame(error=f"Gnani TTS SSE: {msg}")
                         return
 
@@ -682,6 +717,11 @@ class GnaniSSETTSService(TTSService):
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            logger.error(
+                "[TTS SSE] synthesize failed | request_id={} | error={}",
+                request_id,
+                str(e),
+            )
             await self.push_error(error_msg=f"Error in SSE TTS: {e}", exception=e)
             yield ErrorFrame(error=f"Error in SSE TTS: {e}", exception=e)
         finally:
@@ -765,6 +805,7 @@ class GnaniTTSService(InterruptibleTTSService):
         self._awaiting_first_chunk = False
         self._teardown_done = False
         self._pcm_processor = _TtsPcmProcessor()
+        self._request_id: str | None = None
 
     def can_generate_metrics(self) -> bool:
         """Return whether this service can emit TTS metrics.
@@ -857,12 +898,18 @@ class GnaniTTSService(InterruptibleTTSService):
             ``None`` after sending the request; audio arrives via ``_receive_messages``.
             ``TTSTextFrame`` is emitted by the base class after synthesis completes.
         """
-        logger.debug(f"{self}: Streaming TTS [{text}]")
+        request_id = _generate_request_id()
+        self._request_id = request_id
+        logger.debug("[TTS WS] synthesize start | request_id={}", request_id)
 
         if not self._ws:
             await self._connect_websocket()
 
         if not self._ws:
+            logger.error(
+                "[TTS WS] synthesize failed | request_id={} | error=not connected",
+                request_id,
+            )
             await self.push_error(error_msg="Gnani TTS WebSocket not connected")
             yield ErrorFrame(error="Gnani TTS WebSocket not connected")
             return
@@ -878,6 +925,11 @@ class GnaniTTSService(InterruptibleTTSService):
             await self.start_tts_usage_metrics(text)
 
         except Exception as e:
+            logger.error(
+                "[TTS WS] synthesize failed | request_id={} | error={}",
+                request_id,
+                str(e),
+            )
             await self.push_error(error_msg=f"Error sending TTS request: {e}", exception=e)
             yield ErrorFrame(error=f"Error sending TTS request: {e}", exception=e)
 
@@ -888,10 +940,12 @@ class GnaniTTSService(InterruptibleTTSService):
             if self._ws:
                 return
 
-            logger.debug("Connecting to Gnani Vachana TTS WebSocket")
+            request_id = _generate_request_id()
+            logger.debug("[TTS WS] connect | request_id={}", request_id)
             headers = {
                 "Content-Type": "application/json",
                 "X-API-Key-ID": self._api_key,
+                "X-API-Request-ID": request_id,
                 **sdk_headers(),
             }
 
@@ -910,7 +964,7 @@ class GnaniTTSService(InterruptibleTTSService):
             await self._call_event_handler("on_connected")
 
         except Exception as e:
-            logger.error(f"Failed to connect to Gnani TTS: {e}")
+            logger.error("[TTS WS] connect failed | error={}", str(e))
             self._ws = None
             await self.push_error(error_msg=f"Failed to connect to Gnani TTS: {e}", exception=e)
             await self._call_event_handler("on_connection_error", f"{e}")
@@ -926,7 +980,7 @@ class GnaniTTSService(InterruptibleTTSService):
 
         if self._ws:
             try:
-                logger.debug("Disconnecting from Gnani Vachana TTS WebSocket")
+                logger.debug("[TTS WS] disconnect")
                 await self._ws.close()
             except Exception:
                 pass
@@ -960,18 +1014,30 @@ class GnaniTTSService(InterruptibleTTSService):
                     if audio_b64:
                         await self._handle_audio_chunk(base64.b64decode(audio_b64))
                     self._bot_speaking = False
+                    logger.debug(
+                        "[TTS WS] synthesize complete | request_id={}",
+                        self._request_id,
+                    )
                     await self.push_frame(TTSStoppedFrame())
 
                 elif msg_type == "error":
                     error_msg = data.get("message", "Unknown error")
-                    logger.error(f"Gnani TTS stream error: {error_msg}")
+                    logger.error(
+                        "[TTS WS] stream error | request_id={} | error={}",
+                        self._request_id,
+                        error_msg,
+                    )
                     self._bot_speaking = False
                     await self.push_error(error_msg=f"Gnani TTS: {error_msg}")
 
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"Gnani TTS receive error: {e}")
+            logger.error(
+                "[TTS WS] receive error | request_id={} | error={}",
+                self._request_id,
+                str(e),
+            )
             self._bot_speaking = False
             await self.push_error(error_msg=f"Gnani TTS receive error: {e}", exception=e)
             await self._call_event_handler("on_connection_error", f"{e}")
