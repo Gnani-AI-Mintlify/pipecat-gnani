@@ -39,6 +39,7 @@ def sdk_headers(request_id: str | None = None) -> dict[str, str]:
     """
     headers = {
         "User-Agent": f"PipecatGnani/{pipecat_gnani.__version__} Python/{platform.python_version()}",
+        "X-Source": "pipecat",
     }
     if request_id:
         headers["X-API-Request-ID"] = request_id
