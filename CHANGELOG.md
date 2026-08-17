@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.12] - 2026-08-17
+
+### Added
+
+- **`X-Source: pipecat` header** on every outbound STT/TTS request, set in the shared `sdk_headers()` helper so it applies to all transports (REST/SSE/WebSocket TTS, REST/WebSocket STT). Usage originating from this integration is now attributed as `source='pipecat'` in `usage_logs` / `stt_results` / `tts_results`. Callers do not pass it and no public API changed.
+
 ## [0.5.11] - 2026-07-21
 
 ### Changed
