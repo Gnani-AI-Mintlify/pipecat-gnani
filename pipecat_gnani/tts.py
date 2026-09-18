@@ -37,7 +37,7 @@ from pipecat.frames.frames import (
     TTSAudioRawFrame,
     TTSStoppedFrame,
 )
-from pipecat.services.settings import NOT_GIVEN, TTSSettings, _NotGiven, is_given
+from pipecat.services.settings import NOT_GIVEN, TTSSettings, is_given
 from pipecat.services.tts_service import InterruptibleTTSService, TTSService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.tracing.service_decorators import traced_tts
@@ -47,6 +47,7 @@ from pipecat_gnani._common import (
     GNANI_TTS_SSE_URL,
     GNANI_TTS_WS_URL,
     TTS_SUPPORTED_SAMPLE_RATES,
+    _NotGiven,
     tts_language_to_gnani,
 )
 from pipecat_gnani._sdk import _generate_request_id, sdk_headers, ws_header_kwargs

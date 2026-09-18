@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Import error on pipecat-ai >= 1.8** — pipecat 1.8 renamed the private `pipecat.services.settings._NotGiven` sentinel type to the public `NotGiven`, so `import pipecat_gnani` raised `ImportError` on any install that resolved pipecat 1.8 or newer. The type is now imported from `_common.py`, trying `NotGiven` first and falling back to `_NotGiven` for older pipecat versions.
+
 ## [0.5.12] - 2026-08-17
 
 ### Added
