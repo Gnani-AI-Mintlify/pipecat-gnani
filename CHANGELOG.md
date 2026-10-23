@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - Unreleased
+
+### Added
+
+- **`timbre-v3.0` TTS model** — 13 new voices (Avinash, Chetana, Devansh, Harshad, Kalpana, Lakshmi, Prakash, Riyaa, Shivani, Shubham, Tarika, Vasudha, Yashraj). Select it with `model="timbre-v3.0"`; `language` is sent in REST/SSE/WebSocket payloads as for `timbre-v2.5`. The default voice is model-aware: `Pranav` for `timbre-v2.5`, `Avinash` for `timbre-v3.0`.
+- Re-exported `TIMBRE_MODELS` and `TIMBRE_V30_VOICES`.
+
+### Changed
+
+- **Bumped `gnani-vachana` dependency to `>=0.8.2,<1.0`.** 0.8.x removed `TIMBRE_V20_VOICES`, so `import pipecat_gnani` 0.5.12 raised `ImportError` on any fresh install that resolved `gnani-vachana` 0.8.x (allowed by the previous `<1.0` pin).
+- **BREAKING:** `timbre-v2.0` is no longer supported by the SDK. The default model is now `timbre-v2.5` (the SDK's `DEFAULT_MODEL`), and `TIMBRE_V20_VOICES` is no longer exported. Pranav, Kaveri, Shubhra and Deepak are all `timbre-v2.5` voices, so code that only set `voice` keeps working.
+
 ## [0.5.12] - 2026-08-17
 
 ### Added

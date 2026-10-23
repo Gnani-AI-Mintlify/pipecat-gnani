@@ -25,8 +25,9 @@ from gnani.tts.client import (  # type: ignore[import-untyped]
     SUPPORTED_MODELS,  # noqa: F401
     SUPPORTED_TTS_LANGUAGES,  # noqa: F401
     SUPPORTED_VOICES,  # noqa: F401
-    TIMBRE_V20_VOICES,  # noqa: F401
+    TIMBRE_MODELS,  # noqa: F401
     TIMBRE_V25_VOICES,  # noqa: F401
+    TIMBRE_V30_VOICES,  # noqa: F401
 )
 from pipecat.transcriptions.language import Language, resolve_language
 

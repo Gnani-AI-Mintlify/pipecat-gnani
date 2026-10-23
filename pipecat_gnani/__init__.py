@@ -16,7 +16,7 @@ Services:
 API docs: https://docs.gnani.ai/api/introduction/introduction
 """
 
-__version__ = "0.5.12"
+__version__ = "0.6.0"
 from pipecat_gnani._common import (
     DEFAULT_MODEL,
     STT_FORMAT_TRANSCRIBE,
@@ -27,8 +27,9 @@ from pipecat_gnani._common import (
     SUPPORTED_SAMPLE_RATES,
     SUPPORTED_TTS_LANGUAGES,
     SUPPORTED_VOICES,
-    TIMBRE_V20_VOICES,
+    TIMBRE_MODELS,
     TIMBRE_V25_VOICES,
+    TIMBRE_V30_VOICES,
 )
 from pipecat_gnani.stt import (
     GnaniHttpSTTService,
@@ -55,8 +56,9 @@ __all__ = [
     "SUPPORTED_SAMPLE_RATES",
     "SUPPORTED_TTS_LANGUAGES",
     "SUPPORTED_VOICES",
-    "TIMBRE_V20_VOICES",
+    "TIMBRE_MODELS",
     "TIMBRE_V25_VOICES",
+    "TIMBRE_V30_VOICES",
     "GnaniHttpSTTService",
     "GnaniHttpSTTSettings",
     "GnaniHttpTTSService",
