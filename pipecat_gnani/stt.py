@@ -27,7 +27,7 @@ from pipecat.frames.frames import (
     StartFrame,
     TranscriptionFrame,
 )
-from pipecat.services.settings import NOT_GIVEN, STTSettings, _NotGiven, is_given
+from pipecat.services.settings import NOT_GIVEN, STTSettings, is_given
 from pipecat.services.stt_service import SegmentedSTTService, STTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
@@ -38,6 +38,7 @@ from pipecat_gnani._common import (
     GNANI_STT_WS_URL,
     STT_SUPPORTED_FORMATS,
     STT_SUPPORTED_SAMPLE_RATES,
+    _NotGiven,
     get_language_string,
     settings_language,
     stt_language_to_gnani,
