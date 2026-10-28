@@ -27,7 +27,7 @@ from pipecat.frames.frames import (
     StartFrame,
     TranscriptionFrame,
 )
-from pipecat.services.settings import NOT_GIVEN, STTSettings, _NotGiven, is_given
+from pipecat.services.settings import NOT_GIVEN, STTSettings, is_given
 from pipecat.services.stt_service import SegmentedSTTService, STTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
@@ -38,6 +38,7 @@ from pipecat_gnani._common import (
     GNANI_STT_WS_URL,
     STT_SUPPORTED_FORMATS,
     STT_SUPPORTED_SAMPLE_RATES,
+    _NotGiven,
     get_language_string,
     settings_language,
     stt_language_to_gnani,
@@ -595,7 +596,8 @@ class GnaniSTTService(STTService):
                 self._request_id,
                 str(e),
             )
-            self._ws = None
+            # Close the old socket and stop its receive task before replacing it.
+            await self._disconnect()
             await self._connect()
             if self._ws:
                 try:
@@ -666,6 +668,13 @@ class GnaniSTTService(STTService):
                 request_id,
                 str(e),
             )
+            # The socket may already be open (e.g. the `connected` message was
+            # malformed or late); close it rather than leaving it to the server.
+            if self._ws is not None:
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
             self._ws = None
             await self.push_error(error_msg=f"Failed to connect to Gnani STT: {e}", exception=e)
             await self._call_event_handler("on_connection_error", str(e))
@@ -689,8 +698,9 @@ class GnaniSTTService(STTService):
         await self._call_event_handler("on_disconnected")
 
     async def _receive_messages(self):
+        ws = self._ws
         try:
-            async for msg in self._ws:
+            async for msg in ws:
                 if isinstance(msg, bytes):
                     continue
 
@@ -731,7 +741,8 @@ class GnaniSTTService(STTService):
                         self._request_id,
                         error_msg,
                     )
-                    self._ws = None
+                    # The stream may stay open after a recoverable error, so keep
+                    # reading it; if the server closes it, the loop ends below.
                     await self.push_error(error_msg=f"Gnani STT: {error_msg}")
 
         except asyncio.CancelledError:
@@ -742,6 +753,14 @@ class GnaniSTTService(STTService):
                 self._request_id,
                 str(e),
             )
-            self._ws = None
             await self.push_error(error_msg=f"Gnani STT receive error: {e}", exception=e)
             await self._call_event_handler("on_connection_error", str(e))
+
+        # The socket ended on its own (server close, network drop, bad message).
+        # Close and forget it so the next run_stt() opens a fresh connection.
+        if self._ws is ws:
+            self._ws = None
+        try:
+            await ws.close()
+        except Exception:
+            pass

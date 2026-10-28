@@ -31,6 +31,11 @@ from gnani.tts.client import (  # type: ignore[import-untyped]
 )
 from pipecat.transcriptions.language import Language, resolve_language
 
+try:
+    from pipecat.services.settings import NotGiven as _NotGiven
+except ImportError:  # pipecat < 1.8 only exposed the private name
+    from pipecat.services.settings import _NotGiven  # type: ignore[no-redef]  # noqa: F401
+
 GNANI_STT_REST_URL = "https://api.vachana.ai/stt/v3"
 GNANI_STT_WS_URL = "wss://api.vachana.ai/stt/v3/stream"
 

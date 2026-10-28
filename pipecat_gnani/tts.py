@@ -40,7 +40,7 @@ from pipecat.frames.frames import (
     TTSAudioRawFrame,
     TTSStoppedFrame,
 )
-from pipecat.services.settings import NOT_GIVEN, TTSSettings, _NotGiven, is_given
+from pipecat.services.settings import NOT_GIVEN, TTSSettings, is_given
 from pipecat.services.tts_service import InterruptibleTTSService, TTSService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.tracing.service_decorators import traced_tts
@@ -50,6 +50,7 @@ from pipecat_gnani._common import (
     GNANI_TTS_SSE_URL,
     GNANI_TTS_WS_URL,
     TTS_SUPPORTED_SAMPLE_RATES,
+    _NotGiven,
     tts_language_to_gnani,
 )
 from pipecat_gnani._sdk import _generate_request_id, sdk_headers, ws_header_kwargs
@@ -902,6 +903,22 @@ class GnaniTTSService(InterruptibleTTSService):
         self._teardown_done = True
         await self._disconnect_websocket()
 
+    async def _connect(self):
+        """Open the WebSocket.
+
+        ``InterruptibleTTSService`` calls ``_disconnect()`` then ``_connect()`` when
+        the user interrupts the bot, so the server stops streaming the interrupted
+        reply. The base implementations only toggle a flag, so the socket has to
+        be opened and closed here.
+        """
+        await super()._connect()
+        await self._connect_websocket()
+
+    async def _disconnect(self):
+        """Close the WebSocket and cancel the receive task."""
+        await super()._disconnect()
+        await self._disconnect_websocket()
+
     @traced_tts
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
         """Send a synthesis request over the Gnani WebSocket TTS connection.
@@ -1003,8 +1020,9 @@ class GnaniTTSService(InterruptibleTTSService):
             self._ws = None
 
     async def _receive_messages(self):
+        ws = self._ws
         try:
-            async for msg in self._ws:
+            async for msg in ws:
                 if isinstance(msg, bytes):
                     await self._handle_audio_chunk(msg)
                     continue
@@ -1057,6 +1075,12 @@ class GnaniTTSService(InterruptibleTTSService):
             self._bot_speaking = False
             await self.push_error(error_msg=f"Gnani TTS receive error: {e}", exception=e)
             await self._call_event_handler("on_connection_error", f"{e}")
+
+        # The socket ended on its own (server close, idle timeout, network drop).
+        # Forget it so the next run_tts() reconnects instead of sending into it.
+        if self._ws is ws:
+            self._ws = None
+            await ws.close()
 
     async def _handle_audio_chunk(self, audio_bytes: bytes):
         audio_bytes = self._pcm_processor.process(audio_bytes)

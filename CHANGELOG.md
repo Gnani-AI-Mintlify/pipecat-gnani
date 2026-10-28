@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Bumped `gnani-vachana` dependency to `>=0.8.2,<1.0`.** 0.8.x removed `TIMBRE_V20_VOICES`, so `import pipecat_gnani` 0.5.12 raised `ImportError` on any fresh install that resolved `gnani-vachana` 0.8.x (allowed by the previous `<1.0` pin).
 - **BREAKING:** `timbre-v2.0` is no longer supported by the SDK. The default model is now `timbre-v2.5` (the SDK's `DEFAULT_MODEL`), and `TIMBRE_V20_VOICES` is no longer exported. Pranav, Kaveri, Shubhra and Deepak are all `timbre-v2.5` voices, so code that only set `voice` keeps working.
 
+### Fixed
+
+- **Import error on pipecat-ai >= 1.8** — pipecat 1.8 renamed the private `pipecat.services.settings._NotGiven` sentinel type to the public `NotGiven`, so `import pipecat_gnani` raised `ImportError` on any install that resolved pipecat 1.8 or newer. The type is now imported from `_common.py`, trying `NotGiven` first and falling back to `_NotGiven` for older pipecat versions.
+
 ## [0.5.12] - 2026-08-17
 
 ### Added
