@@ -21,7 +21,7 @@ Or with [uv](https://docs.astral.sh/uv/):
 uv add pipecat-gnani
 ```
 
-This will also install the [`gnani-vachana`](https://pypi.org/project/gnani-vachana/) (>= 0.7.9) core SDK as a dependency. The Python import package name remains `gnani`.
+This will also install the [`gnani-vachana`](https://pypi.org/project/gnani-vachana/) (>= 0.8.2) core SDK as a dependency. The Python import package name remains `gnani`.
 
 The WebRTC quickstart below needs the **`example`** extra (Pipecat runner, Silero VAD, WebRTC stack, and Groq LLM):
 

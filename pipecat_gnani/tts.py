@@ -234,12 +234,36 @@ def _build_tts_payload(text: str, settings, sample_rate: int) -> dict:
     return payload
 
 
-def _apply_tts_settings_update(service) -> None:
-    model = _settings_model(service._settings)
-    language = _optional_tts_language_code(service._settings)
-    voice = _settings_voice(service._settings)
-    if voice is not None:
-        _validate_tts_settings(voice, model, language)
+def _apply_tts_settings_update(service, changed: dict[str, Any]) -> None:
+    """Validate a runtime settings update, rolling it back if it is invalid.
+
+    The timbre-v2.5 and timbre-v3.0 voice sets do not overlap, so a model change
+    that names no voice keeps the current voice only if the new model has it,
+    and otherwise switches to the new model's default voice.
+
+    Raises:
+        ValueError: If the updated settings are invalid. The previous settings
+            are restored first, so later requests keep working.
+    """
+    settings = service._settings
+    previous_voice = settings.voice
+    model = _settings_model(settings)
+    if "model" in changed and "voice" not in changed:
+        try:
+            _validate_voice(_settings_voice(settings), model)
+        except ValueError:
+            settings.voice = _default_voice(model)
+
+    voice = _settings_voice(settings)
+    if voice is None:
+        return
+    try:
+        _validate_tts_settings(voice, model, _optional_tts_language_code(settings))
+    except ValueError:
+        settings.voice = previous_voice
+        for key, old_value in changed.items():
+            setattr(settings, key, old_value)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -408,12 +432,13 @@ class GnaniHttpTTSService(TTSService):
             Dict mapping changed field names to their previous values.
 
         Raises:
-            ValueError: If ``voice`` is not a supported Gnani voice.
+            ValueError: If ``voice`` is not a supported Gnani voice for ``model``.
+                The update is not applied.
         """
         changed = await super()._update_settings(delta)
 
         if any(k in changed for k in ("voice", "model", "language")):
-            _apply_tts_settings_update(self)
+            _apply_tts_settings_update(self, changed)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
         if unhandled:
@@ -601,12 +626,13 @@ class GnaniSSETTSService(TTSService):
             Dict mapping changed field names to their previous values.
 
         Raises:
-            ValueError: If ``voice`` is not a supported Gnani voice.
+            ValueError: If ``voice`` is not a supported Gnani voice for ``model``.
+                The update is not applied.
         """
         changed = await super()._update_settings(delta)
 
         if any(k in changed for k in ("voice", "model", "language")):
-            _apply_tts_settings_update(self)
+            _apply_tts_settings_update(self, changed)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
         if unhandled:
@@ -845,12 +871,13 @@ class GnaniTTSService(InterruptibleTTSService):
             Dict mapping changed field names to their previous values.
 
         Raises:
-            ValueError: If ``voice`` is not a supported Gnani voice.
+            ValueError: If ``voice`` is not a supported Gnani voice for ``model``.
+                The update is not applied.
         """
         changed = await super()._update_settings(delta)
 
         if any(k in changed for k in ("voice", "model", "language")):
-            _apply_tts_settings_update(self)
+            _apply_tts_settings_update(self, changed)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
         if unhandled:
