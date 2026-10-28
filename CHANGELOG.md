@@ -5,10 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - Unreleased
+
+### Added
+
+- **`timbre-v3.0` TTS model** — 13 new voices (Avinash, Chetana, Devansh, Harshad, Kalpana, Lakshmi, Prakash, Riyaa, Shivani, Shubham, Tarika, Vasudha, Yashraj). Select it with `model="timbre-v3.0"`; `language` is sent in REST/SSE/WebSocket payloads as for `timbre-v2.5`. The default voice is model-aware: `Pranav` for `timbre-v2.5`, `Avinash` for `timbre-v3.0`. Switching `model` at runtime (`TTSUpdateSettingsFrame`) without a `voice` moves to the new model's default voice when the current one isn't available on it.
+- Re-exported `TIMBRE_MODELS` and `TIMBRE_V30_VOICES`.
+
+### Changed
+
+- **Bumped `gnani-vachana` dependency to `>=0.8.2,<1.0`.** 0.8.x removed `TIMBRE_V20_VOICES`, so `import pipecat_gnani` 0.5.12 raised `ImportError` on any fresh install that resolved `gnani-vachana` 0.8.x (allowed by the previous `<1.0` pin).
+- **BREAKING:** `timbre-v2.0` is no longer supported by the SDK. The default model is now `timbre-v2.5` (the SDK's `DEFAULT_MODEL`), and `TIMBRE_V20_VOICES` is no longer exported. Pranav, Kaveri and Deepak are also `timbre-v2.5` voices, so code that only set one of them as `voice` keeps working; **`Shubhra` is not**, and now raises `ValueError` — pick a `timbre-v2.5` voice (see `TIMBRE_V25_VOICES`).
 
 ### Fixed
 
+- **A rejected runtime settings update left the TTS service unusable.** An invalid `TTSUpdateSettingsFrame` (e.g. a voice the model doesn't have) raised `ValueError` but kept the bad values, so every later request failed too. The previous settings are now restored.
 - **Import error on pipecat-ai >= 1.8** — pipecat 1.8 renamed the private `pipecat.services.settings._NotGiven` sentinel type to the public `NotGiven`, so `import pipecat_gnani` raised `ImportError` on any install that resolved pipecat 1.8 or newer. The type is now imported from `_common.py`, trying `NotGiven` first and falling back to `_NotGiven` for older pipecat versions.
 
 ## [0.5.12] - 2026-08-17

@@ -6,7 +6,8 @@ Services:
 - GnaniSSETTSService — SSE streaming synthesis (lower latency)
 - GnaniTTSService — WebSocket streaming synthesis with interruption handling
 
-Voices: Pranav (default), Kaveri, Shubhra, Deepak for timbre-v2.0; 42 voices for timbre-v2.5.
+Models: timbre-v2.5 (default, 42 voices, default voice Pranav) and timbre-v3.0
+(13 voices, default voice Avinash).
 See https://docs.gnani.ai/api/TTS/tts-sse#available-voices
 
 API docs: https://docs.gnani.ai/api/TTS/tts-inference
@@ -23,6 +24,8 @@ from typing import Any, cast
 import aiohttp
 from gnani.tts.client import (  # type: ignore[import-untyped]
     DEFAULT_MODEL,
+    TIMBRE_MODELS,
+    TV30,
     _validate_model,
     _validate_timbre_options,
     _validate_voice,
@@ -206,6 +209,10 @@ def _settings_model(settings) -> str:
     return cast("str", model)
 
 
+def _default_voice(model: str) -> str:
+    return "Avinash" if model == TV30 else "Pranav"
+
+
 def _validate_tts_settings(voice: str | None, model: str, language: str | None = None) -> None:
     _validate_model(model)
     _validate_timbre_options(model, language=language)
@@ -218,21 +225,45 @@ def _build_tts_payload(text: str, settings, sample_rate: int) -> dict:
     _validate_tts_settings(_settings_voice(settings), model, language)
     payload = {
         "text": text,
-        "voice": _settings_voice(settings) or "Pranav",
+        "voice": _settings_voice(settings) or _default_voice(model),
         "model": model,
         "audio_config": _build_audio_config(settings, sample_rate),
     }
-    if model == "timbre-v2.5" and language is not None:
+    if model in TIMBRE_MODELS and language is not None:
         payload["language"] = language
     return payload
 
 
-def _apply_tts_settings_update(service) -> None:
-    model = _settings_model(service._settings)
-    language = _optional_tts_language_code(service._settings)
-    voice = _settings_voice(service._settings)
-    if voice is not None:
-        _validate_tts_settings(voice, model, language)
+def _apply_tts_settings_update(service, changed: dict[str, Any]) -> None:
+    """Validate a runtime settings update, rolling it back if it is invalid.
+
+    The timbre-v2.5 and timbre-v3.0 voice sets do not overlap, so a model change
+    that names no voice keeps the current voice only if the new model has it,
+    and otherwise switches to the new model's default voice.
+
+    Raises:
+        ValueError: If the updated settings are invalid. The previous settings
+            are restored first, so later requests keep working.
+    """
+    settings = service._settings
+    previous_voice = settings.voice
+    model = _settings_model(settings)
+    if "model" in changed and "voice" not in changed:
+        try:
+            _validate_voice(_settings_voice(settings), model)
+        except ValueError:
+            settings.voice = _default_voice(model)
+
+    voice = _settings_voice(settings)
+    if voice is None:
+        return
+    try:
+        _validate_tts_settings(voice, model, _optional_tts_language_code(settings))
+    except ValueError:
+        settings.voice = previous_voice
+        for key, old_value in changed.items():
+            setattr(settings, key, old_value)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +312,7 @@ def _default_tts_settings(
     settings_cls: type[GnaniHttpTTSSettings],
     *,
     model: str,
-    voice: str,
+    voice: str | None,
 ) -> GnaniHttpTTSSettings:
     """Build a store-mode settings object with every field explicitly set."""
     return settings_cls(
@@ -336,7 +367,8 @@ class GnaniHttpTTSService(TTSService):
         Args:
             api_key: Gnani Vachana API key for authentication.
             aiohttp_session: Shared aiohttp session for HTTP requests.
-            voice_id: Default voice name (Pranav, Kaveri, Shubhra, or Deepak).
+            voice_id: Default voice name. Defaults to Pranav for timbre-v2.5
+                and Avinash for timbre-v3.0.
             model: TTS model identifier.
             sample_rate: Optional output sample rate override. When omitted, negotiated from
                 ``StartFrame``.
@@ -348,10 +380,12 @@ class GnaniHttpTTSService(TTSService):
         default_settings = _default_tts_settings(
             self.Settings,
             model=model,
-            voice=voice_id or "Pranav",
+            voice=voice_id,
         )
         if settings is not None:
             default_settings.apply_update(settings)
+        if _settings_voice(default_settings) is None:
+            default_settings.voice = _default_voice(_settings_model(default_settings))
 
         _validate_tts_settings(
             _settings_voice(default_settings),
@@ -398,12 +432,13 @@ class GnaniHttpTTSService(TTSService):
             Dict mapping changed field names to their previous values.
 
         Raises:
-            ValueError: If ``voice`` is not a supported Gnani voice.
+            ValueError: If ``voice`` is not a supported Gnani voice for ``model``.
+                The update is not applied.
         """
         changed = await super()._update_settings(delta)
 
         if any(k in changed for k in ("voice", "model", "language")):
-            _apply_tts_settings_update(self)
+            _apply_tts_settings_update(self, changed)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
         if unhandled:
@@ -526,7 +561,8 @@ class GnaniSSETTSService(TTSService):
         Args:
             api_key: Gnani Vachana API key for authentication.
             aiohttp_session: Shared aiohttp session for HTTP requests.
-            voice_id: Default voice name (Pranav, Kaveri, Shubhra, or Deepak).
+            voice_id: Default voice name. Defaults to Pranav for timbre-v2.5
+                and Avinash for timbre-v3.0.
             model: TTS model identifier.
             sample_rate: Optional output sample rate override. When omitted, negotiated from
                 ``StartFrame``.
@@ -538,10 +574,12 @@ class GnaniSSETTSService(TTSService):
         default_settings = _default_tts_settings(
             self.Settings,
             model=model,
-            voice=voice_id or "Pranav",
+            voice=voice_id,
         )
         if settings is not None:
             default_settings.apply_update(settings)
+        if _settings_voice(default_settings) is None:
+            default_settings.voice = _default_voice(_settings_model(default_settings))
 
         _validate_tts_settings(
             _settings_voice(default_settings),
@@ -588,12 +626,13 @@ class GnaniSSETTSService(TTSService):
             Dict mapping changed field names to their previous values.
 
         Raises:
-            ValueError: If ``voice`` is not a supported Gnani voice.
+            ValueError: If ``voice`` is not a supported Gnani voice for ``model``.
+                The update is not applied.
         """
         changed = await super()._update_settings(delta)
 
         if any(k in changed for k in ("voice", "model", "language")):
-            _apply_tts_settings_update(self)
+            _apply_tts_settings_update(self, changed)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
         if unhandled:
@@ -768,7 +807,8 @@ class GnaniTTSService(InterruptibleTTSService):
 
         Args:
             api_key: Gnani Vachana API key for authentication.
-            voice_id: Default voice name (Pranav, Kaveri, Shubhra, or Deepak).
+            voice_id: Default voice name. Defaults to Pranav for timbre-v2.5
+                and Avinash for timbre-v3.0.
             model: TTS model identifier.
             sample_rate: Optional output sample rate override. When omitted, negotiated from
                 ``StartFrame``.
@@ -780,10 +820,12 @@ class GnaniTTSService(InterruptibleTTSService):
         default_settings = _default_tts_settings(
             self.Settings,
             model=model,
-            voice=voice_id or "Pranav",
+            voice=voice_id,
         )
         if settings is not None:
             default_settings.apply_update(settings)
+        if _settings_voice(default_settings) is None:
+            default_settings.voice = _default_voice(_settings_model(default_settings))
 
         _validate_tts_settings(
             _settings_voice(default_settings),
@@ -829,12 +871,13 @@ class GnaniTTSService(InterruptibleTTSService):
             Dict mapping changed field names to their previous values.
 
         Raises:
-            ValueError: If ``voice`` is not a supported Gnani voice.
+            ValueError: If ``voice`` is not a supported Gnani voice for ``model``.
+                The update is not applied.
         """
         changed = await super()._update_settings(delta)
 
         if any(k in changed for k in ("voice", "model", "language")):
-            _apply_tts_settings_update(self)
+            _apply_tts_settings_update(self, changed)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
         if unhandled:

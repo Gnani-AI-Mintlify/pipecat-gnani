@@ -21,7 +21,7 @@ Or with [uv](https://docs.astral.sh/uv/):
 uv add pipecat-gnani
 ```
 
-This will also install the [`gnani-vachana`](https://pypi.org/project/gnani-vachana/) (>= 0.7.9) core SDK as a dependency. The Python import package name remains `gnani`.
+This will also install the [`gnani-vachana`](https://pypi.org/project/gnani-vachana/) (>= 0.8.2) core SDK as a dependency. The Python import package name remains `gnani`.
 
 The WebRTC quickstart below needs the **`example`** extra (Pipecat runner, Silero VAD, WebRTC stack, and Groq LLM):
 
@@ -263,17 +263,32 @@ For the full list of supported languages, see [TTS — Supported Languages](http
 
 See the [official voice list](https://docs.gnani.ai/api/TTS/tts-sse#available-voices) for the latest supported voices.
 
-| Voice   | Gender | Description              |
-|---------|--------|--------------------------|
-| Pranav  | Male   | Bold, Trustworthy        |
-| Kaveri  | Female | Confident, Bright        |
-| Shubhra | Female | Gentle, Expressive       |
-| Deepak  | Male   | Grounded, Conversational |
+Voices depend on the TTS model. Set it with `model` in `Settings` (or the `model` argument).
+
+| Model                   | Voices | Default voice | Voice set           |
+|-------------------------|--------|---------------|---------------------|
+| `timbre-v2.5` (default) | 42     | Pranav        | `TIMBRE_V25_VOICES` |
+| `timbre-v3.0`           | 13     | Avinash       | `TIMBRE_V30_VOICES` |
+
+`timbre-v3.0` voices: Avinash, Chetana, Devansh, Harshad, Kalpana, Lakshmi, Prakash, Riyaa, Shivani, Shubham, Tarika, Vasudha, Yashraj.
+
+```python
+tts = GnaniTTSService(
+    api_key=os.getenv("GNANI_API_KEY"),
+    settings=GnaniTTSService.Settings(
+        model="timbre-v3.0",
+        voice="Shivani",
+        language="hi-IN",
+    ),
+)
+```
+
+`timbre-v2.0` is no longer supported by `gnani-vachana` 0.8.x.
 
 ## Architecture
 
 ```
-gnani-vachana (>=0.7.9)  ← Core SDK on PyPI (import as `gnani`)
+gnani-vachana (>=0.8.2)  ← Core SDK on PyPI (import as `gnani`)
         ↑
 pipecat-gnani            ← This package (Pipecat service adapters)
   ├── STT: REST + WebSocket
