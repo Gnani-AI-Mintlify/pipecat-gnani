@@ -50,6 +50,7 @@ SUPPORTED_SAMPLE_RATES = TTS_SUPPORTED_SAMPLE_RATES
 
 STT_FORMAT_VERBATIM = "verbatim"
 STT_FORMAT_TRANSCRIBE = "transcribe"
+# Formats for the streaming service. REST also takes ``codemix`` with prisma-v3.0.
 STT_SUPPORTED_FORMATS = (STT_FORMAT_VERBATIM, STT_FORMAT_TRANSCRIBE)
 
 STT_LANGUAGE_MAP = cast(
@@ -145,16 +146,37 @@ def get_language_string(
     return "en-IN"
 
 
+def language_from_gnani(code: Any) -> Language | None:
+    """Convert a Gnani BCP-47 code (e.g. ``"ta-IN"``) to a Language enum.
+
+    Args:
+        code: Language code string, or a Language enum.
+
+    Returns:
+        The matching Language enum, or ``None`` for unknown codes and
+        ``"indic-auto"``.
+    """
+    if isinstance(code, Language):
+        return code
+    if not isinstance(code, str) or not code:
+        return None
+    try:
+        return Language(code)
+    except ValueError:
+        return None
+
+
 def settings_language(settings: Any) -> Language | None:
-    """Return the Language enum from settings, if set.
+    """Return the configured language from settings as a Language enum.
+
+    pipecat stores the language as the service's string code (e.g.
+    ``"hi-IN"``), so it is mapped back to the enum here.
 
     Args:
         settings: Service settings object with a ``language`` attribute.
 
     Returns:
-        The Language enum when configured, otherwise ``None``.
+        The Language enum when configured, otherwise ``None`` (also for
+        ``"indic-auto"``, where the language is only known per transcript).
     """
-    lang = settings.language
-    if isinstance(lang, Language):
-        return lang
-    return None
+    return language_from_gnani(settings.language)

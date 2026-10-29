@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`prisma-v3.0` STT model** on both `GnaniHttpSTTService` (REST) and `GnaniSTTService` (WebSocket), opt-in with `Settings(model="prisma-v3.0")`. Without `model`, requests are unchanged and use the default model.
+  - `language="indic-auto"` lets the model identify the language.
+  - `language_candidates`: 2–4 likely languages with `"indic-auto"` (sent as `multi_lang_codes` / `x-language-candidates`).
+  - `keywords` (both services); `topic`, `previous_text`, `speaker_names` and `format="codemix"` (REST only).
+  - prisma-v3.0-only options, unsupported languages (e.g. `as-IN`), out-of-range values and unsupported context combinations raise `ValueError` at construction and on settings updates (the previous settings are kept), not as a 400 mid-call. Changing `language` away from `"indic-auto"` clears `language_candidates`, as the server does.
+  - `TranscriptionFrame.language` is the language the model reported for that transcript (`detected_language_code`), so it follows a caller who switches language. A REST transcript cut short by the model (`truncated`) is logged as a warning.
+  - Exports `PRISMA_V3_MODEL`, `PRISMA_V3_LANGUAGES`, `INDIC_AUTO_LANGUAGE_CODE` and `STT_FORMAT_CODEMIX`.
+- `Settings.model` is now sent (`model` form field / `x-model` header). It was previously accepted and ignored.
 - **`timbre-v3.0` TTS model** — 13 new voices (Avinash, Chetana, Devansh, Harshad, Kalpana, Lakshmi, Prakash, Riyaa, Shivani, Shubham, Tarika, Vasudha, Yashraj). Select it with `model="timbre-v3.0"`; `language` is sent in REST/SSE/WebSocket payloads as for `timbre-v2.5`. The default voice is model-aware: `Pranav` for `timbre-v2.5`, `Avinash` for `timbre-v3.0`. Switching `model` at runtime (`TTSUpdateSettingsFrame`) without a `voice` moves to the new model's default voice when the current one isn't available on it.
 - Re-exported `TIMBRE_MODELS` and `TIMBRE_V30_VOICES`.
 
@@ -19,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`TranscriptionFrame.language` was always `None`.** pipecat stores the configured language as a string (`"hi-IN"`), which the services did not map back to `Language`. Frames now carry the configured language (or the detected one with prisma-v3.0).
+- **WebSocket `itn_native_numerals` had no effect.** It was sent as an `itn_native_numerals` header, which the server does not read; it is now `x-itn-native-numerals`.
 - **A rejected runtime settings update left the TTS service unusable.** An invalid `TTSUpdateSettingsFrame` (e.g. a voice the model doesn't have) raised `ValueError` but kept the bad values, so every later request failed too. The previous settings are now restored.
 - **Import error on pipecat-ai >= 1.8** — pipecat 1.8 renamed the private `pipecat.services.settings._NotGiven` sentinel type to the public `NotGiven`, so `import pipecat_gnani` raised `ImportError` on any install that resolved pipecat 1.8 or newer. The type is now imported from `_common.py`, trying `NotGiven` first and falling back to `_NotGiven` for older pipecat versions.
 

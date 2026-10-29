@@ -172,6 +172,39 @@ stt = GnaniSTTService(
 )
 ```
 
+### Speech-to-Text with `prisma-v3.0` (multilingual)
+
+`prisma-v3.0` is one model for ten Indian languages — `bn-IN`, `en-IN`, `gu-IN`, `hi-IN`, `kn-IN`, `ml-IN`, `mr-IN`, `pa-IN`, `ta-IN`, `te-IN` — that can identify the language by itself. Both STT services support it; select it with `model="prisma-v3.0"`. Without `model`, nothing changes: the default model is used.
+
+```python
+from pipecat_gnani import GnaniSTTService
+
+stt = GnaniSTTService(
+    api_key="your-api-key",
+    settings=GnaniSTTService.Settings(
+        model="prisma-v3.0",
+        language="indic-auto",                    # let the model identify the language
+        language_candidates=["hi-IN", "en-IN"],   # optional: 2-4 likely languages (a hint)
+        keywords=["HDFC Bank", "खाता"],            # optional: words to favour
+    ),
+)
+```
+
+Each `TranscriptionFrame` carries the language of that utterance in `frame.language` (e.g. `Language.TA_IN`), so a caller can switch languages mid-call and downstream processors — the LLM prompt, the TTS voice — can follow. It is judged from the script of the transcript; the full API response is in `frame.result`.
+
+| Setting | REST (`GnaniHttpSTTService`) | WebSocket (`GnaniSTTService`) | Notes |
+|---|---|---|---|
+| `model="prisma-v3.0"` | ✅ | ✅ | |
+| `language="indic-auto"` | ✅ | ✅ | or force one of the ten languages (`as-IN` / `or-IN` are not covered) |
+| `language_candidates` | ✅ | ✅ | 2–4 languages, only with `"indic-auto"`. A hint, not a limit |
+| `format` | `verbatim`, `transcribe`, `codemix` | `verbatim`, `transcribe` | `codemix`: English stays in Latin script, numbers as words |
+| `keywords` | ✅ | ✅ | up to 200 words or short phrases |
+| `topic` | ✅ | — | what the conversation is about, 30–1,600 characters |
+| `previous_text` | ✅ | — | the transcript just before this segment, 12+ characters |
+| `speaker_names` | ✅ | — | 1–4 names |
+
+Context must be one of: `keywords`, `topic`, `topic` + `keywords`, `speaker_names`, or `previous_text`. These options raise `ValueError` when the service is built (or when settings are updated) if they are used with another model or out of range, rather than failing on the first utterance. REST audio is limited to 30 s per segment.
+
 ### Text-to-Speech (REST)
 
 ```python
@@ -249,7 +282,7 @@ Frames must be sent at **real-time cadence**. See **[STT Realtime — PCM Specif
 
 ### STT Languages (Speech-to-Text)
 
-STT uses BCP-47 locale codes (e.g. `hi-IN`, `bn-IN`). Note: STT uses the **`-IN`** suffix (unlike TTS).
+STT uses BCP-47 locale codes (e.g. `hi-IN`, `bn-IN`). Note: STT uses the **`-IN`** suffix (unlike TTS). With `model="prisma-v3.0"`, `"indic-auto"` lets the model identify the language (see above).
 
 For the full list of supported languages, see [STT — Supported Languages](https://docs.gnani.ai/api/STT/speech-to-text#supported-languages).
 

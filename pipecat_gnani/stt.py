@@ -5,10 +5,15 @@ Services:
 - GnaniHttpSTTService — REST-based file transcription (requires VAD)
 - GnaniSTTService — WebSocket streaming transcription with real-time VAD
 
+Both accept ``model="prisma-v3.0"``, the multilingual model: it can identify
+the language itself (``language="indic-auto"``), take 2-4 candidate languages,
+and reports the language of each transcript on the frame's ``language``.
+
 API docs: https://docs.gnani.ai/api/STT/speech-to-text
 """
 
 import asyncio
+import copy
 import io
 import json
 import wave
@@ -36,12 +41,23 @@ from pipecat.utils.tracing.service_decorators import traced_stt
 from pipecat_gnani._common import (
     GNANI_STT_REST_URL,
     GNANI_STT_WS_URL,
-    STT_SUPPORTED_FORMATS,
     STT_SUPPORTED_SAMPLE_RATES,
     _NotGiven,
     get_language_string,
+    language_from_gnani,
     settings_language,
     stt_language_to_gnani,
+)
+from pipecat_gnani._prisma import (
+    INDIC_AUTO_LANGUAGE_CODE,
+    PRISMA_V3_MODEL,
+    build_context,
+    check_format,
+    check_language,
+    is_prisma_v3,
+    is_set,
+    parse_candidates,
+    require_prisma_v3,
 )
 from pipecat_gnani._sdk import _generate_request_id, sdk_headers, ws_header_kwargs
 
@@ -106,6 +122,108 @@ def _pcm_to_wav(pcm: bytes, sample_rate: int, *, channels: int = 1, sample_width
     return buf.getvalue()
 
 
+def _model_name(model: Any) -> str | None:
+    """Return the model to send, or ``None`` for the server default."""
+    if not is_set(model) or not str(model).strip():
+        return None
+    return PRISMA_V3_MODEL if is_prisma_v3(model) else str(model).strip()
+
+
+def _frame_language(payload: dict[str, Any], settings: Any) -> Language | None:
+    """Language for a transcript frame.
+
+    prisma-v3.0 reports ``detected_language_code`` per transcript, which is
+    what an ``indic-auto`` session needs; otherwise use the configured language.
+    """
+    return language_from_gnani(payload.get("detected_language_code")) or settings_language(settings)
+
+
+def _drop_stale_candidates(settings: Any, changed: dict[str, Any]) -> None:
+    """Clear candidates when the language moves off ``indic-auto``.
+
+    Candidates only apply to ``indic-auto`` (the server drops them on a
+    language change too), so a plain language switch should not fail on them.
+    """
+    if (
+        "language" in changed
+        and "language_candidates" not in changed
+        and settings.language != INDIC_AUTO_LANGUAGE_CODE
+    ):
+        settings.language_candidates = None
+
+
+def _build_rest_fields(settings: Any) -> dict[str, str]:
+    """Validate REST settings and return the ``POST /stt/v3`` form fields.
+
+    Raises:
+        ValueError: If an option is invalid, or prisma-v3.0-only with another model.
+    """
+    model = _model_name(settings.model)
+    lang = get_language_string(settings, stt_language_to_gnani) or "en-IN"
+    fmt = getattr(settings, "format", None)
+    check_language(lang, model)
+    check_format(fmt, model, streaming=False)
+    candidates = parse_candidates(getattr(settings, "language_candidates", None), lang, model)
+    context = {
+        "keywords": getattr(settings, "keywords", None),
+        "topic": getattr(settings, "topic", None),
+        "previous_text": getattr(settings, "previous_text", None),
+        "speaker_names": getattr(settings, "speaker_names", None),
+    }
+    require_prisma_v3(model, **context)
+
+    fields: dict[str, str] = {"language_code": lang}
+    if model:
+        fields["model"] = model
+    if is_set(fmt):
+        fields["format"] = fmt
+    itn = getattr(settings, "itn_native_numerals", None)
+    if is_set(itn) and itn:
+        fields["itn_native_numerals"] = "true"
+    if candidates:
+        fields["multi_lang_codes"] = ",".join(candidates)
+    if is_prisma_v3(model):
+        for key, value in build_context(**context).items():
+            # Lists go as JSON arrays so an item may contain a comma.
+            fields[key] = (
+                json.dumps(value, ensure_ascii=False) if isinstance(value, list) else value
+            )
+    return fields
+
+
+def _build_ws_option_headers(settings: Any) -> dict[str, str]:
+    """Validate streaming settings and return the option headers for the handshake.
+
+    Raises:
+        ValueError: If an option is invalid, or prisma-v3.0-only with another model.
+    """
+    model = _model_name(settings.model)
+    lang = get_language_string(settings, stt_language_to_gnani) or "en-IN"
+    fmt = getattr(settings, "format", None)
+    keywords = getattr(settings, "keywords", None)
+    check_language(lang, model)
+    check_format(fmt, model, streaming=True)
+    candidates = parse_candidates(getattr(settings, "language_candidates", None), lang, model)
+    require_prisma_v3(model, keywords=keywords)
+
+    headers: dict[str, str] = {"lang_code": lang}
+    if model:
+        headers["x-model"] = model
+    if is_set(fmt):
+        headers["x-format"] = fmt
+    itn = getattr(settings, "itn_native_numerals", None)
+    if is_set(itn) and itn:
+        headers["x-itn-native-numerals"] = "true"
+    if candidates:
+        headers["x-language-candidates"] = ",".join(candidates)
+    if is_prisma_v3(model):
+        words = build_context(keywords=keywords).get("keywords")
+        if words:
+            # HTTP headers are ASCII: JSON-escape non-ASCII keywords.
+            headers["x-keywords"] = json.dumps(words, ensure_ascii=True)
+    return headers
+
+
 # ---------------------------------------------------------------------------
 # REST (HTTP) STT
 # ---------------------------------------------------------------------------
@@ -116,12 +234,38 @@ class GnaniHttpSTTSettings(STTSettings):
     """Settings for GnaniHttpSTTService (REST).
 
     Parameters:
-        format: 'verbatim' (default) or 'transcribe' (enables ITN).
+        model: STT model. ``None`` (default) uses the server's default model;
+            ``"prisma-v3.0"`` is the multilingual model, which unlocks the
+            options marked *prisma-v3.0 only* below.
+        language: A ``Language`` or BCP-47 code. With prisma-v3.0,
+            ``"indic-auto"`` lets the model identify the language; the
+            detected language is set on each ``TranscriptionFrame``.
+        format: 'verbatim' or 'transcribe' (enables ITN); 'codemix' with
+            prisma-v3.0 (English words in Latin script, numbers as words).
         itn_native_numerals: When format='transcribe', render digits in native script.
+        language_candidates: *prisma-v3.0 only, with language="indic-auto"*.
+            2-4 languages the speaker is likely to use. A hint, not a limit.
+        keywords: *prisma-v3.0 only*. Words or short phrases to favour
+            (names, brands, product terms), up to 200.
+        topic: *prisma-v3.0 only*. What the conversation is about, 30-1,600 characters.
+        previous_text: *prisma-v3.0 only*. Transcript just before this
+            segment (12+ characters).
+        speaker_names: *prisma-v3.0 only*. 1-4 names that may be spoken.
+
+    prisma-v3.0 accepts only these context combinations: ``keywords``,
+    ``topic``, ``topic`` + ``keywords``, ``speaker_names``, or ``previous_text``.
+    Audio is limited to 30 s per request.
     """
 
     format: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
     itn_native_numerals: bool | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    language_candidates: list[str | Language] | str | None | _NotGiven = field(
+        default_factory=lambda: NOT_GIVEN
+    )
+    keywords: list[str] | str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    topic: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    previous_text: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    speaker_names: list[str] | str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
 
 def _default_http_stt_settings(
@@ -135,6 +279,11 @@ def _default_http_stt_settings(
         language=language,
         format=None,
         itn_native_numerals=None,
+        language_candidates=None,
+        keywords=None,
+        topic=None,
+        previous_text=None,
+        speaker_names=None,
     )
 
 
@@ -152,6 +301,19 @@ class GnaniHttpSTTService(SegmentedSTTService):
             aiohttp_session=session,
             settings=GnaniHttpSTTService.Settings(
                 language=Language.HI_IN,
+            ),
+        )
+
+    Let prisma-v3.0 identify the language (each frame's ``language`` is the
+    detected one)::
+
+        stt = GnaniHttpSTTService(
+            api_key="your-api-key",
+            aiohttp_session=session,
+            settings=GnaniHttpSTTService.Settings(
+                model="prisma-v3.0",
+                language="indic-auto",
+                language_candidates=["hi-IN", "en-IN"],  # optional hint
             ),
         )
     """
@@ -172,8 +334,12 @@ class GnaniHttpSTTService(SegmentedSTTService):
         Args:
             api_key: Gnani Vachana API key for authentication.
             aiohttp_session: Shared aiohttp session for HTTP requests.
-            settings: Runtime-updatable STT settings (language, format, ITN options).
+            settings: Runtime-updatable STT settings (model, language, format, ITN
+                and prisma-v3.0 options).
             **kwargs: Additional arguments passed to the parent SegmentedSTTService.
+
+        Raises:
+            ValueError: If a setting is invalid for the chosen model.
         """
         default_settings = _default_http_stt_settings(self.Settings)
 
@@ -182,8 +348,33 @@ class GnaniHttpSTTService(SegmentedSTTService):
 
         super().__init__(settings=default_settings, **kwargs)
 
+        # Fail at construction rather than as a 400 on the first utterance.
+        _build_rest_fields(self._settings)
+
         self._api_key = api_key
         self._session = aiohttp_session
+
+    async def _update_settings(self, delta: STTSettings) -> dict[str, Any]:  # type: ignore[override]
+        """Apply a settings delta, keeping the old settings if the result is invalid.
+
+        Args:
+            delta: Settings delta from an ``STTUpdateSettingsFrame``.
+
+        Returns:
+            Dict mapping changed field names to their previous values.
+
+        Raises:
+            ValueError: If the updated settings are invalid for the chosen model.
+        """
+        previous = copy.copy(self._settings)
+        changed = await super()._update_settings(delta)
+        _drop_stale_candidates(self._settings, changed)
+        try:
+            _build_rest_fields(self._settings)
+        except ValueError:
+            self._settings = previous
+            raise
+        return changed
 
     def can_generate_metrics(self) -> bool:
         """Return whether this service can emit processing metrics.
@@ -230,13 +421,14 @@ class GnaniHttpSTTService(SegmentedSTTService):
         try:
             await self.start_processing_metrics()
 
-            lang = get_language_string(self._settings, stt_language_to_gnani)
+            fields = _build_rest_fields(self._settings)
 
             headers = {"X-API-Key-ID": self._api_key, **sdk_headers(request_id=request_id)}
             logger.debug(
-                "[STT HTTP] transcribe start | request_id={} | language={}",
+                "[STT HTTP] transcribe start | request_id={} | language={} | model={}",
                 request_id,
-                lang,
+                fields["language_code"],
+                fields.get("model", "default"),
             )
 
             # pipecat delivers raw PCM; the REST endpoint decodes an audio file.
@@ -246,15 +438,8 @@ class GnaniHttpSTTService(SegmentedSTTService):
 
             form = aiohttp.FormData()
             form.add_field("audio_file", audio, filename="audio.wav", content_type="audio/wav")
-            form.add_field("language_code", lang or "en-IN")
-
-            fmt = getattr(self._settings, "format", None)
-            if fmt and fmt not in (NOT_GIVEN, None):
-                form.add_field("format", fmt)
-
-            itn = getattr(self._settings, "itn_native_numerals", None)
-            if itn and itn not in (NOT_GIVEN, None):
-                form.add_field("itn_native_numerals", str(itn).lower())
+            for name, value in fields.items():
+                form.add_field(name, value)
 
             async with self._session.post(
                 GNANI_STT_REST_URL, data=form, headers=headers
@@ -274,14 +459,20 @@ class GnaniHttpSTTService(SegmentedSTTService):
 
             await self.stop_processing_metrics()
 
-            text = result.get("transcript", "").strip()
+            text = (result.get("transcript") or "").strip()
             logger.debug(
-                "[STT HTTP] transcribe complete | request_id={} | transcript_length={}",
+                "[STT HTTP] transcribe complete | request_id={} | transcript_length={} | detected_language={}",
                 request_id,
                 len(text),
+                result.get("detected_language_code"),
             )
+            if result.get("truncated"):
+                logger.warning(
+                    "[STT HTTP] transcript was cut short by the model | request_id={}",
+                    request_id,
+                )
             if text:
-                lang = settings_language(self._settings)
+                lang = _frame_language(result, self._settings)
                 await self._handle_transcription(text, True, lang)
                 yield _make_transcript_frame(
                     text,
@@ -311,14 +502,28 @@ class GnaniSTTSettings(STTSettings):
     """Settings for GnaniSTTService (WebSocket streaming).
 
     Parameters:
+        model: STT model, sent as ``x-model``. ``None`` (default) uses the
+            server's default model; ``"prisma-v3.0"`` is the multilingual model.
+        language: A ``Language`` or BCP-47 code. With prisma-v3.0,
+            ``"indic-auto"`` lets the model identify the language of each
+            utterance; the detected language is set on each ``TranscriptionFrame``.
         sample_rate: Audio sample rate (8000, 16000, 44100, or 48000 Hz).
         format: 'verbatim' for raw output, 'transcribe' for ITN-normalized output.
+            ('codemix' is REST-only.)
         itn_native_numerals: When format='transcribe', render digits in native script.
+        language_candidates: *prisma-v3.0 only, with language="indic-auto"*.
+            2-4 languages the speaker is likely to use. A hint, not a limit.
+        keywords: *prisma-v3.0 only*. Words or short phrases to favour
+            (names, brands, product terms), up to 200.
     """
 
     sample_rate: int | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
     format: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
     itn_native_numerals: bool | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    language_candidates: list[str | Language] | str | None | _NotGiven = field(
+        default_factory=lambda: NOT_GIVEN
+    )
+    keywords: list[str] | str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
 
 def _default_ws_stt_settings(
@@ -333,6 +538,8 @@ def _default_ws_stt_settings(
         sample_rate=None,
         format=None,
         itn_native_numerals=None,
+        language_candidates=None,
+        keywords=None,
     )
 
 
@@ -356,6 +563,17 @@ class GnaniSTTService(STTService):
                 language=Language.HI_IN,
             ),
         )
+
+    Let prisma-v3.0 identify the language of each utterance::
+
+        stt = GnaniSTTService(
+            api_key="your-api-key",
+            settings=GnaniSTTService.Settings(
+                model="prisma-v3.0",
+                language="indic-auto",
+                language_candidates=["hi-IN", "en-IN"],  # optional hint
+            ),
+        )
     """
 
     Settings = GnaniSTTSettings
@@ -377,10 +595,14 @@ class GnaniSTTService(STTService):
             api_key: Gnani Vachana API key for authentication.
             sample_rate: Optional audio sample rate override (8000, 16000, 44100, or 48000 Hz).
                 When omitted, the rate is negotiated from ``StartFrame``.
-            settings: Runtime-updatable STT settings (language, format, sample rate, ITN).
+            settings: Runtime-updatable STT settings (model, language, format, sample
+                rate, ITN and prisma-v3.0 options).
             keepalive_timeout: Seconds of silence before sending keepalive audio. ``None`` disables.
             keepalive_interval: Seconds between keepalive checks when enabled.
             **kwargs: Additional arguments passed to the parent STTService.
+
+        Raises:
+            ValueError: If ``sample_rate`` or a setting is invalid for the chosen model.
         """
         if sample_rate is not None and sample_rate not in STT_SUPPORTED_SAMPLE_RATES:
             raise ValueError(
@@ -392,16 +614,6 @@ class GnaniSTTService(STTService):
         if settings is not None:
             default_settings.apply_update(settings)
 
-        if (
-            hasattr(default_settings, "format")
-            and default_settings.format
-            and default_settings.format not in (NOT_GIVEN, None)
-            and default_settings.format not in STT_SUPPORTED_FORMATS
-        ):
-            raise ValueError(
-                f"format must be one of {STT_SUPPORTED_FORMATS}, got '{default_settings.format}'"
-            )
-
         super().__init__(
             sample_rate=sample_rate,
             keepalive_timeout=keepalive_timeout,
@@ -409,6 +621,9 @@ class GnaniSTTService(STTService):
             settings=default_settings,
             **kwargs,
         )
+
+        # Fail at construction rather than with an error frame at connect time.
+        _build_ws_option_headers(self._settings)
 
         self._api_key = api_key
         self._ws = None
@@ -464,16 +679,27 @@ class GnaniSTTService(STTService):
             Dict mapping changed field names to their previous values.
 
         Raises:
-            ValueError: If ``format`` is not a supported value.
+            ValueError: If the updated settings are invalid for the chosen model;
+                the previous settings are kept.
         """
-        if isinstance(delta, self.Settings):
-            fmt = getattr(delta, "format", NOT_GIVEN)
-            if is_given(fmt) and fmt is not None and fmt not in STT_SUPPORTED_FORMATS:
-                raise ValueError(f"format must be one of {STT_SUPPORTED_FORMATS}, got '{fmt}'")
-
+        previous = copy.copy(self._settings)
         changed = await super()._update_settings(delta)
+        _drop_stale_candidates(self._settings, changed)
+        try:
+            _build_ws_option_headers(self._settings)
+        except ValueError:
+            self._settings = previous
+            raise
 
-        reconnect_fields = {"language", "format", "itn_native_numerals", "sample_rate"}
+        reconnect_fields = {
+            "model",
+            "language",
+            "format",
+            "itn_native_numerals",
+            "sample_rate",
+            "language_candidates",
+            "keywords",
+        }
         if changed.keys() & reconnect_fields:
             if "sample_rate" in changed:
                 self._sample_rate = self._resolve_sample_rate()
@@ -616,22 +842,13 @@ class GnaniSTTService(STTService):
         logger.debug("[STT WS] connect | request_id={}", request_id)
 
         try:
-            lang = get_language_string(self._settings, stt_language_to_gnani)
             headers = {
                 "x-api-key-id": self._api_key,
-                "lang_code": lang or "en-IN",
+                **_build_ws_option_headers(self._settings),
                 "x-sample-rate": str(self._resolve_sample_rate()),
                 "x-api-request-id": request_id,
                 **sdk_headers(),
             }
-
-            fmt = getattr(self._settings, "format", None)
-            if fmt and fmt not in (NOT_GIVEN, None):
-                headers["x-format"] = fmt
-
-            itn = getattr(self._settings, "itn_native_numerals", None)
-            if itn and itn not in (NOT_GIVEN, None):
-                headers["itn_native_numerals"] = str(itn).lower()
 
             self._ws = await websocket_connect(
                 GNANI_STT_WS_URL,
@@ -717,7 +934,7 @@ class GnaniSTTService(STTService):
                         )
                         # Gnani currently sends final transcripts only; honour is_final when present.
                         is_final = data.get("is_final", True)
-                        lang = settings_language(self._settings)
+                        lang = _frame_language(data, self._settings)
                         await self._push_transcript(
                             text,
                             is_final=is_final,
