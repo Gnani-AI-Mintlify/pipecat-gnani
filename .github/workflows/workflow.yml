@@ -39,6 +39,18 @@ jobs:
       - name: Check distribution metadata
         run: uv run twine check dist/*
 
+      - name: Smoke-test the built wheel
+        run: |
+          python3 -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --quiet dist/*.whl
+          PKG="$(grep -m1 '^version' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          cd /tmp && /tmp/smoke/bin/python -c "
+          import pipecat_gnani as p
+          assert p.__version__ == '$PKG', (p.__version__, '$PKG')
+          assert 'site-packages' in p.__file__
+          print('ok', p.__version__)
+          "
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -49,6 +61,8 @@ jobs:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
+    # Only tagged releases publish; a manual run from a branch just builds and checks.
+    if: startsWith(github.ref, 'refs/tags/')
     environment:
       name: pypi
       url: https://pypi.org/p/pipecat-gnani
@@ -63,3 +77,7 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # A tag push and a published GitHub Release both trigger this workflow;
+          # the second run must not fail on files already uploaded.
+          skip-existing: true
