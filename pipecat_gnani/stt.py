@@ -9,6 +9,7 @@ API docs: https://docs.gnani.ai/api/STT/speech-to-text
 """
 
 import asyncio
+import copy
 import io
 import json
 import wave
@@ -27,18 +28,21 @@ from pipecat.frames.frames import (
     StartFrame,
     TranscriptionFrame,
 )
-from pipecat.services.settings import NOT_GIVEN, STTSettings, _NotGiven, is_given
+from pipecat.services.settings import NOT_GIVEN, STTSettings, is_given
 from pipecat.services.stt_service import SegmentedSTTService, STTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.tracing.service_decorators import traced_stt
 
 from pipecat_gnani._common import (
+    NotGiven,
     GNANI_STT_REST_URL,
     GNANI_STT_WS_URL,
-    STT_SUPPORTED_FORMATS,
+    STREAM_SUPPORTED_LANGUAGES,
+    STT_SUPPORTED_LANGUAGES,
     STT_SUPPORTED_SAMPLE_RATES,
-    get_language_string,
+    language_from_code,
+    resolve_stt_request_options,
     settings_language,
     stt_language_to_gnani,
 )
@@ -117,10 +121,23 @@ class GnaniHttpSTTSettings(STTSettings):
     Parameters:
         format: 'verbatim' (default) or 'transcribe' (enables ITN).
         itn_native_numerals: When format='transcribe', render digits in native script.
+        language_candidates: 2-4 languages to listen for first. Only with
+            ``language=INDIC_AUTO`` and ``model="prisma-v3.0"``. Hints, not a lock.
+        keyterms: Words or phrases to favour (up to 200). ``prisma-v3.0`` only.
+        topic: What the audio is about, free text (up to 1,600 chars). ``prisma-v3.0`` only.
+        previous_text: What was said just before (last 600 chars kept). ``prisma-v3.0`` only.
+        speaker_names: 1-4 speaker names. ``prisma-v3.0`` only.
     """
 
-    format: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    itn_native_numerals: bool | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    format: str | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    itn_native_numerals: bool | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    language_candidates: list[Language | str] | None | NotGiven = field(
+        default_factory=lambda: NOT_GIVEN
+    )
+    keyterms: list[str] | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    topic: str | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    previous_text: str | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    speaker_names: list[str] | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
 
 def _default_http_stt_settings(
@@ -134,6 +151,11 @@ def _default_http_stt_settings(
         language=language,
         format=None,
         itn_native_numerals=None,
+        language_candidates=None,
+        keyterms=None,
+        topic=None,
+        previous_text=None,
+        speaker_names=None,
     )
 
 
@@ -178,6 +200,8 @@ class GnaniHttpSTTService(SegmentedSTTService):
 
         if settings is not None:
             default_settings.apply_update(settings)
+
+        resolve_stt_request_options(default_settings, supported_languages=STT_SUPPORTED_LANGUAGES)
 
         super().__init__(settings=default_settings, **kwargs)
 
@@ -229,7 +253,10 @@ class GnaniHttpSTTService(SegmentedSTTService):
         try:
             await self.start_processing_metrics()
 
-            lang = get_language_string(self._settings, stt_language_to_gnani)
+            opts = resolve_stt_request_options(
+                self._settings, supported_languages=STT_SUPPORTED_LANGUAGES
+            )
+            lang = opts.language_code
 
             headers = {"X-API-Key-ID": self._api_key, **sdk_headers(request_id=request_id)}
             logger.debug(
@@ -245,7 +272,17 @@ class GnaniHttpSTTService(SegmentedSTTService):
 
             form = aiohttp.FormData()
             form.add_field("audio_file", audio, filename="audio.wav", content_type="audio/wav")
-            form.add_field("language_code", lang or "en-IN")
+            form.add_field("language_code", lang)
+
+            if opts.model:
+                form.add_field("model", opts.model)
+            if opts.candidates:
+                form.add_field("multi_lang_codes", ",".join(opts.candidates))
+            for key, value in opts.context.items():
+                # Lists go as JSON arrays so an item may contain a comma.
+                form.add_field(
+                    key, json.dumps(value, ensure_ascii=False) if isinstance(value, list) else value
+                )
 
             fmt = getattr(self._settings, "format", None)
             if fmt and fmt not in (NOT_GIVEN, None):
@@ -280,7 +317,10 @@ class GnaniHttpSTTService(SegmentedSTTService):
                 len(text),
             )
             if text:
-                lang = settings_language(self._settings)
+                lang = language_from_code(
+                    result.get("detected_language_code"),
+                    fallback=settings_language(self._settings),
+                )
                 await self._handle_transcription(text, True, lang)
                 yield _make_transcript_frame(
                     text,
@@ -313,11 +353,24 @@ class GnaniSTTSettings(STTSettings):
         sample_rate: Audio sample rate (8000, 16000, 44100, or 48000 Hz).
         format: 'verbatim' for raw output, 'transcribe' for ITN-normalized output.
         itn_native_numerals: When format='transcribe', render digits in native script.
+        language_candidates: 2-4 languages to listen for first. Only with
+            ``language=INDIC_AUTO`` and ``model="prisma-v3.0"``. Hints, not a lock.
+        keyterms: Words or phrases to favour (up to 200). ``prisma-v3.0`` only.
+        topic: What the audio is about, free text (up to 1,600 chars). ``prisma-v3.0`` only.
+        previous_text: What was said just before (last 600 chars kept). ``prisma-v3.0`` only.
+        speaker_names: 1-4 speaker names. ``prisma-v3.0`` only.
     """
 
-    sample_rate: int | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    format: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    itn_native_numerals: bool | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    sample_rate: int | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    format: str | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    itn_native_numerals: bool | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    language_candidates: list[Language | str] | None | NotGiven = field(
+        default_factory=lambda: NOT_GIVEN
+    )
+    keyterms: list[str] | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    topic: str | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    previous_text: str | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    speaker_names: list[str] | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
 
 def _default_ws_stt_settings(
@@ -332,6 +385,11 @@ def _default_ws_stt_settings(
         sample_rate=None,
         format=None,
         itn_native_numerals=None,
+        language_candidates=None,
+        keyterms=None,
+        topic=None,
+        previous_text=None,
+        speaker_names=None,
     )
 
 
@@ -391,15 +449,9 @@ class GnaniSTTService(STTService):
         if settings is not None:
             default_settings.apply_update(settings)
 
-        if (
-            hasattr(default_settings, "format")
-            and default_settings.format
-            and default_settings.format not in (NOT_GIVEN, None)
-            and default_settings.format not in STT_SUPPORTED_FORMATS
-        ):
-            raise ValueError(
-                f"format must be one of {STT_SUPPORTED_FORMATS}, got '{default_settings.format}'"
-            )
+        resolve_stt_request_options(
+            default_settings, supported_languages=STREAM_SUPPORTED_LANGUAGES
+        )
 
         super().__init__(
             sample_rate=sample_rate,
@@ -463,16 +515,31 @@ class GnaniSTTService(STTService):
             Dict mapping changed field names to their previous values.
 
         Raises:
-            ValueError: If ``format`` is not a supported value.
+            ValueError: If the resulting settings are invalid (unknown model, a format or
+                language option the model does not support, bad context hints).
         """
         if isinstance(delta, self.Settings):
-            fmt = getattr(delta, "format", NOT_GIVEN)
-            if is_given(fmt) and fmt is not None and fmt not in STT_SUPPORTED_FORMATS:
-                raise ValueError(f"format must be one of {STT_SUPPORTED_FORMATS}, got '{fmt}'")
+            # Validate the settings that would result from this update, so an
+            # invalid combination (e.g. a v3-only option without
+            # ``model="prisma-v3.0"``) is refused before anything is applied.
+            merged = copy.deepcopy(self._settings)
+            merged.apply_update(delta)
+            resolve_stt_request_options(merged, supported_languages=STREAM_SUPPORTED_LANGUAGES)
 
         changed = await super()._update_settings(delta)
 
-        reconnect_fields = {"language", "format", "itn_native_numerals", "sample_rate"}
+        reconnect_fields = {
+            "language",
+            "format",
+            "itn_native_numerals",
+            "sample_rate",
+            "model",
+            "language_candidates",
+            "keyterms",
+            "topic",
+            "previous_text",
+            "speaker_names",
+        }
         if changed.keys() & reconnect_fields:
             if "sample_rate" in changed:
                 self._sample_rate = self._resolve_sample_rate()
@@ -614,14 +681,25 @@ class GnaniSTTService(STTService):
         logger.debug("[STT WS] connect | request_id={}", request_id)
 
         try:
-            lang = get_language_string(self._settings, stt_language_to_gnani)
+            opts = resolve_stt_request_options(
+                self._settings, supported_languages=STREAM_SUPPORTED_LANGUAGES
+            )
             headers = {
                 "x-api-key-id": self._api_key,
-                "lang_code": lang or "en-IN",
+                "lang_code": opts.language_code,
                 "x-sample-rate": str(self._resolve_sample_rate()),
                 "x-api-request-id": request_id,
                 **sdk_headers(),
             }
+
+            if opts.model:
+                headers["x-model"] = opts.model
+            if opts.candidates:
+                headers["x-language-candidates"] = ",".join(opts.candidates)
+            for key, value in opts.context.items():
+                # Lists go as JSON; the default ASCII escaping keeps non-Latin text
+                # header-safe, as the API docs require for ``keyterms``.
+                headers[key] = json.dumps(value) if isinstance(value, list) else value
 
             fmt = getattr(self._settings, "format", None)
             if fmt and fmt not in (NOT_GIVEN, None):
@@ -707,7 +785,10 @@ class GnaniSTTService(STTService):
                         )
                         # Gnani currently sends final transcripts only; honour is_final when present.
                         is_final = data.get("is_final", True)
-                        lang = settings_language(self._settings)
+                        lang = language_from_code(
+                            data.get("detected_language_code"),
+                            fallback=settings_language(self._settings),
+                        )
                         await self._push_transcript(
                             text,
                             is_final=is_final,

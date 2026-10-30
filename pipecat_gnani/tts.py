@@ -6,8 +6,8 @@ Services:
 - GnaniSSETTSService — SSE streaming synthesis (lower latency)
 - GnaniTTSService — WebSocket streaming synthesis with interruption handling
 
-Voices: Pranav (default), Kaveri, Shubhra, Deepak for timbre-v2.0; 42 voices for timbre-v2.5.
-See https://docs.gnani.ai/api/TTS/tts-sse#available-voices
+Models: timbre-v2.5 (default, 42 voices) and timbre-v3.0 (13 voices).
+See https://docs.gnani.ai/api/TTS/available-voices
 
 API docs: https://docs.gnani.ai/api/TTS/tts-inference
 """
@@ -16,13 +16,13 @@ import asyncio
 import base64
 import json
 import struct
+import warnings
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any, cast
 
 import aiohttp
 from gnani.tts.client import (  # type: ignore[import-untyped]
-    DEFAULT_MODEL,
     _validate_model,
     _validate_timbre_options,
     _validate_voice,
@@ -37,12 +37,15 @@ from pipecat.frames.frames import (
     TTSAudioRawFrame,
     TTSStoppedFrame,
 )
-from pipecat.services.settings import NOT_GIVEN, TTSSettings, _NotGiven, is_given
+from pipecat.services.settings import NOT_GIVEN, TTSSettings, is_given
 from pipecat.services.tts_service import InterruptibleTTSService, TTSService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.tracing.service_decorators import traced_tts
 
 from pipecat_gnani._common import (
+    DEFAULT_MODEL,
+    DEFAULT_VOICE,
+    NotGiven,
     GNANI_TTS_REST_URL,
     GNANI_TTS_SSE_URL,
     GNANI_TTS_WS_URL,
@@ -65,9 +68,21 @@ except ModuleNotFoundError as e:
 _DEFAULT_TTS_SAMPLE_RATE = 16000
 _WAV_HEADER_SIZE = 44
 
+# Settings the services act on. A runtime update to any of these is re-validated;
+# anything else is reported by Pipecat as "unhandled".
 _TTS_HANDLED_SETTINGS = frozenset(
-    {"voice", "model", "language", "encoding", "container", "sample_width", "bitrate"}
+    {"voice", "model", "language", "speed", "encoding", "container", "sample_width", "bitrate"}
 )
+
+# Accepted for backward compatibility but ignored: output is always 16-bit PCM and ``bitrate``
+# only applies to MP3, which Pipecat cannot play.
+_DEPRECATED_TTS_SETTINGS = ("sample_width", "bitrate")
+_warned_deprecated: set[str] = set()
+
+# Pipecat pipelines carry raw 16-bit PCM, so only PCM output is usable. Other encodings and
+# containers (mp3, ogg/opus, mulaw, alaw) would be emitted as audio frames and play as noise.
+_PCM_ENCODING = "linear_pcm"
+_PCM_CONTAINERS = ("wav", "raw")
 
 
 def _strip_wav_header(data: bytes) -> bytes:
@@ -153,23 +168,66 @@ class _TtsPcmProcessor:
         return self._aligner.align(audio)
 
 
+def _given_or_none(value):
+    return value if is_given(value) else None
+
+
+def _warn_deprecated_settings(settings) -> None:
+    """Warn (once per setting per process) when an ignored, deprecated setting is used."""
+    for name in _DEPRECATED_TTS_SETTINGS:
+        if _given_or_none(getattr(settings, name, None)) is None or name in _warned_deprecated:
+            continue
+        _warned_deprecated.add(name)
+        message = (
+            f"Gnani TTS setting '{name}' is deprecated and ignored (output is always 16-bit "
+            "PCM); it will be removed in a future release."
+        )
+        warnings.warn(message, DeprecationWarning, stacklevel=3)
+        logger.warning(message)
+
+
+def _validate_audio_format(settings) -> None:
+    """Reject encodings/containers Pipecat cannot play (only 16-bit PCM is supported)."""
+    encoding = _given_or_none(settings.encoding)
+    container = _given_or_none(settings.container)
+    if encoding is not None and encoding != _PCM_ENCODING:
+        raise ValueError(
+            f"Unsupported encoding '{encoding}': Pipecat plays raw 16-bit PCM only, "
+            f"use '{_PCM_ENCODING}'."
+        )
+    if container is not None and container not in _PCM_CONTAINERS:
+        raise ValueError(
+            f"Unsupported container '{container}': use one of {', '.join(_PCM_CONTAINERS)}."
+        )
+
+
 def _build_audio_config(settings, sample_rate: int) -> dict:
-    config: dict = {
+    return {
         "sample_rate": sample_rate,
-        "encoding": settings.encoding or "linear_pcm",
+        "encoding": _PCM_ENCODING,
         "num_channels": 1,
-        "sample_width": settings.sample_width or 2,
-        "container": settings.container or "wav",
+        "sample_width": 2,
+        "container": _given_or_none(settings.container) or "wav",
     }
-    bitrate = getattr(settings, "bitrate", None)
-    if bitrate and bitrate not in (NOT_GIVEN, None):
-        config["bitrate"] = bitrate
-    return config
 
 
 def _validate_sample_rate(sample_rate: int | None, *, supported: tuple[int, ...]) -> None:
     if sample_rate is not None and sample_rate not in supported:
         raise ValueError(f"sample_rate must be one of {supported}, got {sample_rate}")
+
+
+def _negotiate_tts_sample_rate(service: TTSService) -> int:
+    """Resolve the output rate at start-up, warning when the pipeline rate is unsupported."""
+    resolved = _resolved_tts_sample_rate(service)
+    if service.sample_rate != resolved:
+        logger.warning(
+            "Gnani TTS does not support a {} Hz pipeline rate (supported: {}); "
+            "synthesizing at {} Hz instead.",
+            service.sample_rate,
+            TTS_SUPPORTED_SAMPLE_RATES,
+            resolved,
+        )
+    return resolved
 
 
 def _resolved_tts_sample_rate(service: TTSService) -> int:
@@ -205,33 +263,46 @@ def _settings_model(settings) -> str:
     return cast("str", model)
 
 
-def _validate_tts_settings(voice: str | None, model: str, language: str | None = None) -> None:
+def _settings_speed(settings) -> float | None:
+    speed = _given_or_none(getattr(settings, "speed", None))
+    return None if speed is None else float(speed)
+
+
+def _validate_tts_settings(settings) -> None:
+    """Validate model, voice, language, speed and audio format using the SDK's rules."""
+    model = _settings_model(settings)
     _validate_model(model)
-    _validate_timbre_options(model, language=language)
-    _validate_voice(voice, model)
+    _validate_timbre_options(
+        model,
+        language=_optional_tts_language_code(settings),
+        speed=_settings_speed(settings),
+    )
+    voice = _settings_voice(settings)
+    if voice is not None:
+        _validate_voice(voice, model)
+    _validate_audio_format(settings)
+    _warn_deprecated_settings(settings)
 
 
 def _build_tts_payload(text: str, settings, sample_rate: int) -> dict:
-    model = _settings_model(settings)
-    language = _optional_tts_language_code(settings)
-    _validate_tts_settings(_settings_voice(settings), model, language)
+    _validate_tts_settings(settings)
     payload = {
         "text": text,
-        "voice": _settings_voice(settings) or "Pranav",
-        "model": model,
+        "voice": _settings_voice(settings) or DEFAULT_VOICE,
+        "model": _settings_model(settings),
         "audio_config": _build_audio_config(settings, sample_rate),
     }
-    if model == "timbre-v2.5" and language is not None:
+    language = _optional_tts_language_code(settings)
+    if language is not None:
         payload["language"] = language
+    speed = _settings_speed(settings)
+    if speed is not None:
+        payload["speed"] = speed
     return payload
 
 
 def _apply_tts_settings_update(service) -> None:
-    model = _settings_model(service._settings)
-    language = _optional_tts_language_code(service._settings)
-    voice = _settings_voice(service._settings)
-    if voice is not None:
-        _validate_tts_settings(voice, model, language)
+    _validate_tts_settings(service._settings)
 
 
 # ---------------------------------------------------------------------------
@@ -243,17 +314,23 @@ def _apply_tts_settings_update(service) -> None:
 class GnaniHttpTTSSettings(TTSSettings):
     """Settings for GnaniHttpTTSService and GnaniSSETTSService.
 
+    Inherited ``voice``, ``model`` and ``language`` apply as usual. ``language`` is a
+    BCP-47 code (``hi-IN``), a Pipecat ``Language``, or ``"auto"``; it works with both
+    ``timbre-v2.5`` and ``timbre-v3.0``.
+
     Parameters:
-        encoding: Audio encoding (linear_pcm, oggopus, pcm_mulaw, pcm_alaw).
-        container: Audio container (raw, mp3, wav, ogg, mulaw, alaw).
-        sample_width: Sample width in bytes (1-4). Defaults to 2.
-        bitrate: MP3 bitrate (32k, 64k, 96k, 128k, 192k). Only used when container=mp3.
+        speed: Speaking rate, 0.85 to 1.15 (1.0 is normal). Server default when unset.
+        encoding: Audio encoding. Only ``linear_pcm`` (the default) is supported.
+        container: ``wav`` (default) or ``raw``. The plugin strips it before emitting audio.
+        sample_width: Deprecated and ignored (output is always 16-bit PCM).
+        bitrate: Deprecated and ignored (it only applies to MP3, which Pipecat cannot play).
     """
 
-    encoding: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    container: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    sample_width: int | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    bitrate: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    speed: float | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    encoding: str | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    container: str | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    sample_width: int | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    bitrate: str | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
 
 @dataclass
@@ -286,11 +363,12 @@ def _default_tts_settings(
     return settings_cls(
         model=model,
         voice=voice,
+        speed=None,
         encoding="linear_pcm",
         container="wav",
-        sample_width=2,
-        language=None,
+        sample_width=None,
         bitrate=None,
+        language=None,
     )
 
 
@@ -335,7 +413,7 @@ class GnaniHttpTTSService(TTSService):
         Args:
             api_key: Gnani Vachana API key for authentication.
             aiohttp_session: Shared aiohttp session for HTTP requests.
-            voice_id: Default voice name (Pranav, Kaveri, Shubhra, or Deepak).
+            voice_id: Default voice name (default ``Pranav``). Must belong to ``model``.
             model: TTS model identifier.
             sample_rate: Optional output sample rate override. When omitted, negotiated from
                 ``StartFrame``.
@@ -347,16 +425,12 @@ class GnaniHttpTTSService(TTSService):
         default_settings = _default_tts_settings(
             self.Settings,
             model=model,
-            voice=voice_id or "Pranav",
+            voice=voice_id or DEFAULT_VOICE,
         )
         if settings is not None:
             default_settings.apply_update(settings)
 
-        _validate_tts_settings(
-            _settings_voice(default_settings),
-            _settings_model(default_settings),
-            _optional_tts_language_code(default_settings),
-        )
+        _validate_tts_settings(default_settings)
 
         super().__init__(
             sample_rate=sample_rate,
@@ -377,7 +451,7 @@ class GnaniHttpTTSService(TTSService):
             frame: Pipeline start frame with negotiated audio parameters.
         """
         await super().start(frame)
-        self._sample_rate = _resolved_tts_sample_rate(self)
+        self._sample_rate = _negotiate_tts_sample_rate(self)
 
     def can_generate_metrics(self) -> bool:
         """Return whether this service can emit TTS metrics.
@@ -401,7 +475,7 @@ class GnaniHttpTTSService(TTSService):
         """
         changed = await super()._update_settings(delta)
 
-        if any(k in changed for k in ("voice", "model", "language")):
+        if _TTS_HANDLED_SETTINGS & changed.keys():
             _apply_tts_settings_update(self)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
@@ -525,7 +599,7 @@ class GnaniSSETTSService(TTSService):
         Args:
             api_key: Gnani Vachana API key for authentication.
             aiohttp_session: Shared aiohttp session for HTTP requests.
-            voice_id: Default voice name (Pranav, Kaveri, Shubhra, or Deepak).
+            voice_id: Default voice name (default ``Pranav``). Must belong to ``model``.
             model: TTS model identifier.
             sample_rate: Optional output sample rate override. When omitted, negotiated from
                 ``StartFrame``.
@@ -537,16 +611,12 @@ class GnaniSSETTSService(TTSService):
         default_settings = _default_tts_settings(
             self.Settings,
             model=model,
-            voice=voice_id or "Pranav",
+            voice=voice_id or DEFAULT_VOICE,
         )
         if settings is not None:
             default_settings.apply_update(settings)
 
-        _validate_tts_settings(
-            _settings_voice(default_settings),
-            _settings_model(default_settings),
-            _optional_tts_language_code(default_settings),
-        )
+        _validate_tts_settings(default_settings)
 
         super().__init__(
             sample_rate=sample_rate,
@@ -567,7 +637,7 @@ class GnaniSSETTSService(TTSService):
             frame: Pipeline start frame with negotiated audio parameters.
         """
         await super().start(frame)
-        self._sample_rate = _resolved_tts_sample_rate(self)
+        self._sample_rate = _negotiate_tts_sample_rate(self)
 
     def can_generate_metrics(self) -> bool:
         """Return whether this service can emit TTS metrics.
@@ -591,7 +661,7 @@ class GnaniSSETTSService(TTSService):
         """
         changed = await super()._update_settings(delta)
 
-        if any(k in changed for k in ("voice", "model", "language")):
+        if _TTS_HANDLED_SETTINGS & changed.keys():
             _apply_tts_settings_update(self)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
@@ -767,7 +837,7 @@ class GnaniTTSService(InterruptibleTTSService):
 
         Args:
             api_key: Gnani Vachana API key for authentication.
-            voice_id: Default voice name (Pranav, Kaveri, Shubhra, or Deepak).
+            voice_id: Default voice name (default ``Pranav``). Must belong to ``model``.
             model: TTS model identifier.
             sample_rate: Optional output sample rate override. When omitted, negotiated from
                 ``StartFrame``.
@@ -779,16 +849,12 @@ class GnaniTTSService(InterruptibleTTSService):
         default_settings = _default_tts_settings(
             self.Settings,
             model=model,
-            voice=voice_id or "Pranav",
+            voice=voice_id or DEFAULT_VOICE,
         )
         if settings is not None:
             default_settings.apply_update(settings)
 
-        _validate_tts_settings(
-            _settings_voice(default_settings),
-            _settings_model(default_settings),
-            _optional_tts_language_code(default_settings),
-        )
+        _validate_tts_settings(default_settings)
 
         super().__init__(
             sample_rate=sample_rate,
@@ -801,7 +867,6 @@ class GnaniTTSService(InterruptibleTTSService):
         self._api_key = api_key
         self._ws = None
         self._receive_task = None
-        self._bot_speaking = False
         self._awaiting_first_chunk = False
         self._teardown_done = False
         self._pcm_processor = _TtsPcmProcessor()
@@ -832,7 +897,7 @@ class GnaniTTSService(InterruptibleTTSService):
         """
         changed = await super()._update_settings(delta)
 
-        if any(k in changed for k in ("voice", "model", "language")):
+        if _TTS_HANDLED_SETTINGS & changed.keys():
             _apply_tts_settings_update(self)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
@@ -848,7 +913,7 @@ class GnaniTTSService(InterruptibleTTSService):
             frame: Pipeline start frame with negotiated audio parameters.
         """
         await super().start(frame)
-        self._sample_rate = _resolved_tts_sample_rate(self)
+        self._sample_rate = _negotiate_tts_sample_rate(self)
         self._teardown_done = False
         await self._connect_websocket()
 
@@ -918,7 +983,6 @@ class GnaniTTSService(InterruptibleTTSService):
             rate = _resolved_tts_sample_rate(self)
             request_body = _build_tts_payload(text, self._settings, rate)
 
-            self._bot_speaking = True
             self._awaiting_first_chunk = True
             self._pcm_processor.reset()
             await self._ws.send(json.dumps(request_body))
@@ -1013,12 +1077,11 @@ class GnaniTTSService(InterruptibleTTSService):
                     audio_b64 = _audio_b64(data)
                     if audio_b64:
                         await self._handle_audio_chunk(base64.b64decode(audio_b64))
-                    self._bot_speaking = False
                     logger.debug(
                         "[TTS WS] synthesize complete | request_id={}",
                         self._request_id,
                     )
-                    await self.push_frame(TTSStoppedFrame())
+                    await self._finish_audio_context()
 
                 elif msg_type == "error":
                     error_msg = data.get("message", "Unknown error")
@@ -1027,8 +1090,8 @@ class GnaniTTSService(InterruptibleTTSService):
                         self._request_id,
                         error_msg,
                     )
-                    self._bot_speaking = False
                     await self.push_error(error_msg=f"Gnani TTS: {error_msg}")
+                    await self._finish_audio_context()
 
         except asyncio.CancelledError:
             raise
@@ -1038,7 +1101,6 @@ class GnaniTTSService(InterruptibleTTSService):
                 self._request_id,
                 str(e),
             )
-            self._bot_speaking = False
             await self.push_error(error_msg=f"Gnani TTS receive error: {e}", exception=e)
             await self._call_event_handler("on_connection_error", f"{e}")
 
@@ -1048,10 +1110,23 @@ class GnaniTTSService(InterruptibleTTSService):
             if self._awaiting_first_chunk:
                 self._awaiting_first_chunk = False
                 await self.stop_ttfb_metrics()
-            await self.push_frame(
+            # Audio must go through the active audio context, tagged with its id. Pushing
+            # it straight downstream bypasses the context, so Pipecat (>= 1.15) reports
+            # "completed with no audio" for every utterance.
+            context_id = self.get_active_audio_context_id()
+            await self.append_to_audio_context(
+                context_id,
                 TTSAudioRawFrame(
                     audio=audio_bytes,
                     sample_rate=_resolved_tts_sample_rate(self),
                     num_channels=1,
-                )
+                    context_id=context_id,
+                ),
             )
+
+    async def _finish_audio_context(self):
+        """Close the active audio context: emit its stop frame in order, then retire it."""
+        context_id = self.get_active_audio_context_id()
+        if context_id and self.audio_context_available(context_id):
+            await self.append_to_audio_context(context_id, TTSStoppedFrame(context_id=context_id))
+            await self.remove_audio_context(context_id)

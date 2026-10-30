@@ -68,8 +68,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     )
 
     # WebSocket TTS — lowest latency, supports interruption.
-    # timbre-v2.0 (default): Pranav, Kaveri, Shubhra, Deepak
-    # timbre-v2.5: 42 voices — set model and language in Settings, e.g.:
+    # timbre-v2.5 (default): 42 voices; timbre-v3.0: 13 voices. Set model and language in Settings, e.g.:
     #   settings=GnaniTTSService.Settings(voice="Nalini", model="timbre-v2.5", language="hi-IN")
     tts = GnaniTTSService(
         api_key=gnani_api_key,
