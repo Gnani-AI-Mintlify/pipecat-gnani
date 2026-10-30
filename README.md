@@ -21,7 +21,7 @@ Or with [uv](https://docs.astral.sh/uv/):
 uv add pipecat-gnani
 ```
 
-This will also install the [`gnani-vachana`](https://pypi.org/project/gnani-vachana/) (>= 0.8.2) core SDK as a dependency. The Python import package name remains `gnani`.
+This will also install the [`gnani-vachana`](https://pypi.org/project/gnani-vachana/) (>= 0.9.0) core SDK as a dependency. Requires **Python 3.11+** and **Pipecat 1.5 or newer (1.x)**. The Python import package name remains `gnani`.
 
 The WebRTC quickstart below needs the **`example`** extra (Pipecat runner, Silero VAD, WebRTC stack, and Groq LLM):
 
@@ -50,7 +50,7 @@ export GNANI_API_KEY="your-api-key"
 
 ## Quickstart example
 
-The example lives in this repository's `examples/foundational/` directory (not in the PyPI wheel). Clone the repo, then run a small WebRTC bot: Gnani WebSocket STT/TTS, OpenAI LLM, and the Pipecat runner CLI.
+The example lives in this repository's `examples/foundational/` directory (not in the PyPI wheel). Clone the repo, then run a small WebRTC bot: Gnani WebSocket STT/TTS, Groq LLM, and the Pipecat runner CLI.
 
 1. Copy `examples/foundational/env.example` to `examples/foundational/.env` and set `GNANI_API_KEY` and `GROQ_API_KEY`.
 2. With the **`example`** extra installed (see **Install**), from the clone root:
@@ -172,39 +172,6 @@ stt = GnaniSTTService(
 )
 ```
 
-### Speech-to-Text with `prisma-v3.0` (multilingual)
-
-`prisma-v3.0` is one model for ten Indian languages — `bn-IN`, `en-IN`, `gu-IN`, `hi-IN`, `kn-IN`, `ml-IN`, `mr-IN`, `pa-IN`, `ta-IN`, `te-IN` — that can identify the language by itself. Both STT services support it; select it with `model="prisma-v3.0"`. Without `model`, nothing changes: the default model is used.
-
-```python
-from pipecat_gnani import GnaniSTTService
-
-stt = GnaniSTTService(
-    api_key="your-api-key",
-    settings=GnaniSTTService.Settings(
-        model="prisma-v3.0",
-        language="indic-auto",                    # let the model identify the language
-        language_candidates=["hi-IN", "en-IN"],   # optional: 2-4 likely languages (a hint)
-        keywords=["HDFC Bank", "खाता"],            # optional: words to favour
-    ),
-)
-```
-
-Each `TranscriptionFrame` carries the language of that utterance in `frame.language` (e.g. `Language.TA_IN`), so a caller can switch languages mid-call and downstream processors — the LLM prompt, the TTS voice — can follow. It is judged from the script of the transcript; the full API response is in `frame.result`.
-
-| Setting | REST (`GnaniHttpSTTService`) | WebSocket (`GnaniSTTService`) | Notes |
-|---|---|---|---|
-| `model="prisma-v3.0"` | ✅ | ✅ | |
-| `language="indic-auto"` | ✅ | ✅ | or force one of the ten languages (`as-IN` / `or-IN` are not covered) |
-| `language_candidates` | ✅ | ✅ | 2–4 languages, only with `"indic-auto"`. A hint, not a limit |
-| `format` | `verbatim`, `transcribe`, `codemix` | `verbatim`, `transcribe` | `codemix`: English stays in Latin script, numbers as words |
-| `keywords` | ✅ | ✅ | up to 200 words or short phrases |
-| `topic` | ✅ | — | what the conversation is about, 30–1,600 characters |
-| `previous_text` | ✅ | — | the transcript just before this segment, 12+ characters |
-| `speaker_names` | ✅ | — | 1–4 names |
-
-Context must be one of: `keywords`, `topic`, `topic` + `keywords`, `speaker_names`, or `previous_text`. These options raise `ValueError` when the service is built (or when settings are updated) if they are used with another model or out of range, rather than failing on the first utterance. REST audio is limited to 30 s per segment.
-
 ### Text-to-Speech (REST)
 
 ```python
@@ -246,6 +213,72 @@ tts = GnaniTTSService(
 )
 ```
 
+## Models
+
+| | Model | Notes |
+|---|-------|-------|
+| STT | `prisma-v2.5` (default) | Languages: the 10 listed below. Formats: `verbatim`, `transcribe`. |
+| STT | `prisma-v3.0` | Adds `indic-auto` language detection, language candidates, extra formats (`codemix`, `transliterate`) and context hints. Set `model="prisma-v3.0"`. |
+| TTS | `timbre-v2.5` (default) | 42 voices. |
+| TTS | `timbre-v3.0` | 13 voices. Set `model="timbre-v3.0"` and pick a v3.0 voice (a voice must belong to the chosen model). |
+
+`timbre-v2.0` has been retired and is rejected.
+
+## Settings
+
+Pass settings through the service's `Settings` class, for example `GnaniSTTService.Settings(language=Language.HI_IN)`. Invalid values raise `ValueError` when the service is created (and when settings are updated at runtime), before any request is sent.
+
+### STT settings
+
+| Setting | Services | Default | Description |
+|---------|----------|---------|-------------|
+| `language` | both | `Language.EN_IN` | A `Language`, a locale string (`"hi-IN"`), or `"indic-auto"` (or `INDIC_AUTO_LANGUAGE_CODE`) for automatic detection (`prisma-v3.0`). |
+| `model` | both | server default (`prisma-v2.5`) | `"prisma-v2.5"` or `"prisma-v3.0"`. |
+| `format` | both | `verbatim` | `verbatim` or `transcribe` (inverse text normalization: numbers, dates, currency). `codemix` and `transliterate` need `prisma-v3.0`. |
+| `itn_native_numerals` | both | off | With `format="transcribe"`, write digits in the native script. |
+| `language_candidates` | both | none | 2-4 likely languages. Only with `language="indic-auto"` and `prisma-v3.0`. A hint, not a lock. |
+| `keywords` | both | none | Up to 200 words or phrases to favour. `prisma-v3.0` only. |
+| `topic` | REST | none | Free-text description of the audio, up to 1,600 characters. `prisma-v3.0` only. |
+| `previous_text` | REST | none | What was said just before (last 600 characters are used). `prisma-v3.0` only. |
+| `speaker_names` | REST | none | 1-4 speaker names. `prisma-v3.0` only. |
+| `sample_rate` | WebSocket | `16000` | `8000`, `16000`, `44100` or `48000`. |
+
+Changing `language`, `format`, `model`, candidates or `keywords` on a running WebSocket STT service reconnects it with the new values. All validation rules come from the `gnani-vachana` SDK.
+
+#### Automatic language detection
+
+```python
+from pipecat_gnani import INDIC_AUTO_LANGUAGE_CODE, GnaniSTTService
+
+stt = GnaniSTTService(
+    api_key=os.environ["GNANI_API_KEY"],
+    settings=GnaniSTTService.Settings(
+        model="prisma-v3.0",
+        language=INDIC_AUTO_LANGUAGE_CODE,  # same as "indic-auto"
+        language_candidates=[Language.HI_IN, Language.EN_IN],  # recommended
+        keywords=["Gnani", "Vachana"],
+    ),
+)
+```
+
+Each `TranscriptionFrame.language` carries the language the API detected (falling back to the configured one), so downstream processors can react to it.
+
+> **Tip:** pass `language_candidates` when you use `"indic-auto"`. Bare `"indic-auto"` on short utterances followed by silence can mis-detect the language (for example English audio reported as Telugu on the REST endpoint). Candidates, or a fixed language, are more reliable.
+
+### TTS settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `voice` | `Pranav` on v2.5, `Avinash` on v3.0 | Voice name. Must belong to the selected model. Switching `model` at runtime without a `voice` moves to the new model's default voice. |
+| `model` | `timbre-v2.5` | `timbre-v2.5` or `timbre-v3.0`. |
+| `language` | none | `"auto"`, a locale such as `"hi-IN"`, or a `Language`. Works on both models. |
+| `speed` | server default (1.0) | Speaking rate, `0.85` to `1.15`. Can be changed at runtime. |
+| `sample_rate` (constructor) | from the pipeline | `8000`, `16000`, `22050`, `24000`, `44100` or `48000`. If the pipeline asks for another rate, the service warns and uses 16 kHz. |
+
+Audio is always 16-bit PCM, which is what Pipecat plays. The `encoding` and `container` settings only accept `linear_pcm` and `wav` / `raw`; other formats (mp3, ogg, mulaw, alaw) raise `ValueError`. Telephony transports convert to mulaw/alaw themselves.
+
+> **Deprecated:** the `sample_width` and `bitrate` TTS settings, and the `SUPPORTED_ENCODINGS`, `SUPPORTED_CONTAINERS` and `SUPPORTED_BITRATES` exports, are ignored or misleading and will be removed in a future release. They currently log a `DeprecationWarning`.
+
 ## Services
 
 ### STT Services
@@ -282,53 +315,36 @@ Frames must be sent at **real-time cadence**. See **[STT Realtime — PCM Specif
 
 ### STT Languages (Speech-to-Text)
 
-STT uses BCP-47 locale codes (e.g. `hi-IN`, `bn-IN`). Note: STT uses the **`-IN`** suffix (unlike TTS). With `model="prisma-v3.0"`, `"indic-auto"` lets the model identify the language (see above).
+STT uses BCP-47 locale codes with the `-IN` suffix: `bn-IN`, `en-IN`, `gu-IN`, `hi-IN`, `kn-IN`, `ml-IN`, `mr-IN`, `pa-IN`, `ta-IN`, `te-IN`. `"indic-auto"` (`prisma-v3.0`) detects the language automatically.
 
 For the full list of supported languages, see [STT — Supported Languages](https://docs.gnani.ai/api/STT/speech-to-text#supported-languages).
 
 ### TTS Languages (Text-to-Speech)
 
-TTS uses ISO 639 language codes (e.g. `hi`, `bn`). Note: TTS does **not** use the `-IN` suffix.
+TTS uses the same `-IN` locale codes as STT (`hi-IN`, `en-IN`, ...), plus `auto`. Pipecat `Language` values are converted for you; languages Gnani TTS does not support (for example `or-IN`) raise `ValueError`.
 
 For the full list of supported languages, see [TTS — Supported Languages](https://docs.gnani.ai/api/TTS/tts-inference#supported-languages).
 
 ## Available Voices
 
-See the [official voice list](https://docs.gnani.ai/api/TTS/tts-sse#available-voices) for the latest supported voices.
+The full catalog, with gender and style, is in the [official voice list](https://docs.gnani.ai/api/TTS/available-voices). Every voice belongs to one model:
 
-Voices depend on the TTS model. Set it with `model` in `Settings` (or the `model` argument).
+- **`timbre-v2.5`**: 42 voices, for example `Pranav` (default), `Kaveri`, `Nalini`, `Asmita`, `Deepak`.
+- **`timbre-v3.0`**: 13 voices: `Avinash`, `Chetana`, `Devansh`, `Harshad`, `Kalpana`, `Lakshmi`, `Prakash`, `Riyaa`, `Shivani`, `Shubham`, `Tarika`, `Vasudha`, `Yashraj`.
 
-| Model                   | Voices | Default voice | Voice set           |
-|-------------------------|--------|---------------|---------------------|
-| `timbre-v2.5` (default) | 42     | Pranav        | `TIMBRE_V25_VOICES` |
-| `timbre-v3.0`           | 13     | Avinash       | `TIMBRE_V30_VOICES` |
-
-`timbre-v3.0` voices: Avinash, Chetana, Devansh, Harshad, Kalpana, Lakshmi, Prakash, Riyaa, Shivani, Shubham, Tarika, Vasudha, Yashraj.
-
-```python
-tts = GnaniTTSService(
-    api_key=os.getenv("GNANI_API_KEY"),
-    settings=GnaniTTSService.Settings(
-        model="timbre-v3.0",
-        voice="Shivani",
-        language="hi-IN",
-    ),
-)
-```
-
-`timbre-v2.0` is no longer supported by `gnani-vachana` 0.8.x.
+The lists are available in code as `pipecat_gnani.TIMBRE_V25_VOICES` and `pipecat_gnani.TIMBRE_V30_VOICES`.
 
 ## Architecture
 
 ```
-gnani-vachana (>=0.8.2)  ← Core SDK on PyPI (import as `gnani`)
+gnani-vachana (>=0.9.0)  ← Core SDK on PyPI (import as `gnani`)
         ↑
 pipecat-gnani            ← This package (Pipecat service adapters)
   ├── STT: REST + WebSocket
   └── TTS: REST + SSE + WebSocket
 ```
 
-This package wraps the `gnani` SDK into Pipecat's `SegmentedSTTService`, `STTService`, `TTSService`, and `InterruptibleTTSService` base classes.
+The `gnani` SDK supplies the model catalog, voices, languages and validation rules; this package makes the API calls and adapts them to Pipecat's `SegmentedSTTService`, `STTService`, `TTSService`, and `InterruptibleTTSService` base classes.
 
 ## Documentation
 
@@ -343,7 +359,7 @@ This package wraps the `gnani` SDK into Pipecat's `SegmentedSTTService`, `STTSer
 
 ## Pipecat Compatibility
 
-Tested with **Pipecat v1.5.0**.
+Supports **Pipecat 1.5 and newer 1.x releases** (`pipecat-ai>=1.5.0,<2.0`). Tested on 1.5.0 and 1.15.0.
 
 ## License
 

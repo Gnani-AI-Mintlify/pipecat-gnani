@@ -10,7 +10,6 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from gnani.stt.client import (
-    STREAM_CHUNK_BYTES,  # noqa: F401
     STREAM_SUPPORTED_LANGUAGES,  # noqa: F401
     STREAM_SUPPORTED_SAMPLE_RATES,
 )
@@ -19,10 +18,6 @@ from gnani.stt.client import (
 )
 from gnani.tts.client import (  # type: ignore[import-untyped]
     DEFAULT_MODEL,  # noqa: F401
-    SUPPORTED_BITRATES,  # noqa: F401
-    SUPPORTED_CONTAINERS,  # noqa: F401
-    SUPPORTED_ENCODINGS,  # noqa: F401
-    SUPPORTED_MODELS,  # noqa: F401
     SUPPORTED_TTS_LANGUAGES,  # noqa: F401
     SUPPORTED_VOICES,  # noqa: F401
     TIMBRE_MODELS,  # noqa: F401
@@ -45,13 +40,10 @@ GNANI_TTS_WS_URL = "wss://api.vachana.ai/api/v1/tts"
 
 STT_SUPPORTED_SAMPLE_RATES = STREAM_SUPPORTED_SAMPLE_RATES
 TTS_SUPPORTED_SAMPLE_RATES = (8000, 16000, 22050, 24000, 44100, 48000)
-TTS_SUPPORTED_CONTAINERS = frozenset({"raw", "mp3", "wav", "ogg", "mulaw", "alaw"})
 SUPPORTED_SAMPLE_RATES = TTS_SUPPORTED_SAMPLE_RATES
 
 STT_FORMAT_VERBATIM = "verbatim"
 STT_FORMAT_TRANSCRIBE = "transcribe"
-# Formats for the streaming service. REST also takes ``codemix`` with prisma-v3.0.
-STT_SUPPORTED_FORMATS = (STT_FORMAT_VERBATIM, STT_FORMAT_TRANSCRIBE)
 
 STT_LANGUAGE_MAP = cast(
     "dict[Language, str]",

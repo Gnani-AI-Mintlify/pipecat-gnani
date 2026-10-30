@@ -50,11 +50,12 @@ from pipecat_gnani._common import (
 )
 from pipecat_gnani._prisma import (
     INDIC_AUTO_LANGUAGE_CODE,
-    PRISMA_V3_MODEL,
+    STT_MODELS,
     build_context,
     check_format,
     check_language,
     is_prisma_v3,
+    normalize_model,
     is_set,
     parse_candidates,
     require_prisma_v3,
@@ -126,7 +127,10 @@ def _model_name(model: Any) -> str | None:
     """Return the model to send, or ``None`` for the server default."""
     if not is_set(model) or not str(model).strip():
         return None
-    return PRISMA_V3_MODEL if is_prisma_v3(model) else str(model).strip()
+    name = normalize_model(str(model))
+    if name not in STT_MODELS:
+        raise ValueError(f"model must be one of {', '.join(STT_MODELS)}, got {str(model)!r}")
+    return name
 
 
 def _frame_language(payload: dict[str, Any], settings: Any) -> Language | None:
@@ -201,9 +205,11 @@ def _build_ws_option_headers(settings: Any) -> dict[str, str]:
     lang = get_language_string(settings, stt_language_to_gnani) or "en-IN"
     fmt = getattr(settings, "format", None)
     keywords = getattr(settings, "keywords", None)
-    check_language(lang, model)
+    check_language(lang, model, streaming=True)
     check_format(fmt, model, streaming=True)
-    candidates = parse_candidates(getattr(settings, "language_candidates", None), lang, model)
+    candidates = parse_candidates(
+        getattr(settings, "language_candidates", None), lang, model, streaming=True
+    )
     require_prisma_v3(model, keywords=keywords)
 
     headers: dict[str, str] = {"lang_code": lang}
@@ -247,13 +253,12 @@ class GnaniHttpSTTSettings(STTSettings):
             2-4 languages the speaker is likely to use. A hint, not a limit.
         keywords: *prisma-v3.0 only*. Words or short phrases to favour
             (names, brands, product terms), up to 200.
-        topic: *prisma-v3.0 only*. What the conversation is about, 30-1,600 characters.
+        topic: *prisma-v3.0 only*. What the conversation is about, up to 1,600 characters.
         previous_text: *prisma-v3.0 only*. Transcript just before this
-            segment (12+ characters).
+            segment (the last 600 characters are used).
         speaker_names: *prisma-v3.0 only*. 1-4 names that may be spoken.
 
-    prisma-v3.0 accepts only these context combinations: ``keywords``,
-    ``topic``, ``topic`` + ``keywords``, ``speaker_names``, or ``previous_text``.
+    The context options can be combined. All rules come from the ``gnani-vachana`` SDK.
     Audio is limited to 30 s per request.
     """
 
@@ -508,8 +513,8 @@ class GnaniSTTSettings(STTSettings):
             ``"indic-auto"`` lets the model identify the language of each
             utterance; the detected language is set on each ``TranscriptionFrame``.
         sample_rate: Audio sample rate (8000, 16000, 44100, or 48000 Hz).
-        format: 'verbatim' for raw output, 'transcribe' for ITN-normalized output.
-            ('codemix' is REST-only.)
+        format: 'verbatim' for raw output, 'transcribe' for ITN-normalized output;
+            'codemix' and 'transliterate' with prisma-v3.0.
         itn_native_numerals: When format='transcribe', render digits in native script.
         language_candidates: *prisma-v3.0 only, with language="indic-auto"*.
             2-4 languages the speaker is likely to use. A hint, not a limit.

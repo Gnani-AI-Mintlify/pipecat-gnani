@@ -57,12 +57,18 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         raise RuntimeError("GROQ_API_KEY is not set. Copy env.example to .env and fill it in.")
 
     # WebSocket STT — real-time streaming with built-in VAD events.
-    # language options: Language.AS_IN, BN_IN, EN_IN, GU_IN, HI_IN, KN_IN,
+    # prisma-v2.5 (default) languages: Language.AS_IN, BN_IN, EN_IN, GU_IN, HI_IN, KN_IN,
     #   ML_IN, MR_IN, OR_IN, PA_IN, TA_IN, TE_IN
-    # For callers who may speak any of ten Indian languages, use the
-    # multilingual prisma-v3.0 model and let it identify the language:
-    #   GnaniSTTService.Settings(model="prisma-v3.0", language="indic-auto")
-    # Each TranscriptionFrame then carries the detected language.
+    # For callers who may speak any of ten Indian languages, use the multilingual
+    # prisma-v3.0 model and let it identify the language. Candidates (2-4) make
+    # detection more reliable, and keywords bias recognition towards your vocabulary:
+    #   GnaniSTTService.Settings(
+    #       model="prisma-v3.0",
+    #       language="indic-auto",
+    #       language_candidates=[Language.EN_IN, Language.HI_IN],
+    #       keywords=["Gnani", "Vachana"],
+    #   )
+    # Each TranscriptionFrame then carries the detected language in frame.language.
     stt = GnaniSTTService(
         api_key=gnani_api_key,
         sample_rate=16000,
@@ -75,6 +81,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     # timbre-v2.5 (default): 42 voices, e.g. Pranav, Nalini
     # timbre-v3.0: 13 voices — set model and voice in Settings, e.g.:
     #   settings=GnaniTTSService.Settings(voice="Shivani", model="timbre-v3.0", language="hi-IN")
+    # Optional: speed=1.1 (0.85 to 1.15; 1.0 is normal).
     tts = GnaniTTSService(
         api_key=gnani_api_key,
         sample_rate=16000,

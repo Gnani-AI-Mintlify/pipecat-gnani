@@ -22,9 +22,6 @@ from pipecat_gnani._common import (
     DEFAULT_MODEL,
     STT_FORMAT_TRANSCRIBE,
     STT_FORMAT_VERBATIM,
-    SUPPORTED_BITRATES,
-    SUPPORTED_CONTAINERS,
-    SUPPORTED_ENCODINGS,
     SUPPORTED_SAMPLE_RATES,
     SUPPORTED_TTS_LANGUAGES,
     SUPPORTED_VOICES,
@@ -61,9 +58,6 @@ __all__ = [
     "STT_FORMAT_CODEMIX",
     "STT_FORMAT_TRANSCRIBE",
     "STT_FORMAT_VERBATIM",
-    "SUPPORTED_BITRATES",
-    "SUPPORTED_CONTAINERS",
-    "SUPPORTED_ENCODINGS",
     "SUPPORTED_SAMPLE_RATES",
     "SUPPORTED_TTS_LANGUAGES",
     "SUPPORTED_VOICES",
@@ -82,3 +76,26 @@ __all__ = [
     "GnaniTTSSettings",
     "__version__",
 ]
+
+
+# Audio-format constants that used to be re-exported from the Gnani SDK. They list formats
+# (mp3, ogg, mulaw, alaw, bitrates) that this package now rejects, because Pipecat plays
+# 16-bit PCM only. Still importable for one release, with a DeprecationWarning.
+_DEPRECATED_EXPORTS = ("SUPPORTED_BITRATES", "SUPPORTED_CONTAINERS", "SUPPORTED_ENCODINGS")
+
+
+def __getattr__(name: str):
+    if name in _DEPRECATED_EXPORTS:
+        import warnings
+
+        import gnani.tts.client as _sdk_tts
+
+        warnings.warn(
+            f"pipecat_gnani.{name} is deprecated and will be removed in a future release. "
+            "It lists audio formats this package no longer accepts (only linear_pcm with a "
+            "wav/raw container works in Pipecat).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return getattr(_sdk_tts, name)
+    raise AttributeError(f"module 'pipecat_gnani' has no attribute {name!r}")
