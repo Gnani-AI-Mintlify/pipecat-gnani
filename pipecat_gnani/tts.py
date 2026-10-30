@@ -6,8 +6,9 @@ Services:
 - GnaniSSETTSService — SSE streaming synthesis (lower latency)
 - GnaniTTSService — WebSocket streaming synthesis with interruption handling
 
-Models: timbre-v2.5 (default, 42 voices) and timbre-v3.0 (13 voices).
-See https://docs.gnani.ai/api/TTS/available-voices
+Models: timbre-v2.5 (default, 42 voices, default voice Pranav) and timbre-v3.0
+(13 voices, default voice Avinash).
+See https://docs.gnani.ai/api/TTS/tts-sse#available-voices
 
 API docs: https://docs.gnani.ai/api/TTS/tts-inference
 """
@@ -23,6 +24,9 @@ from typing import Any, cast
 
 import aiohttp
 from gnani.tts.client import (  # type: ignore[import-untyped]
+    DEFAULT_MODEL,
+    TIMBRE_MODELS,
+    TV30,
     _validate_model,
     _validate_timbre_options,
     _validate_voice,
@@ -43,13 +47,11 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.tracing.service_decorators import traced_tts
 
 from pipecat_gnani._common import (
-    DEFAULT_MODEL,
-    DEFAULT_VOICE,
-    NotGiven,
     GNANI_TTS_REST_URL,
     GNANI_TTS_SSE_URL,
     GNANI_TTS_WS_URL,
     TTS_SUPPORTED_SAMPLE_RATES,
+    _NotGiven,
     tts_language_to_gnani,
 )
 from pipecat_gnani._sdk import _generate_request_id, sdk_headers, ws_header_kwargs
@@ -74,15 +76,15 @@ _TTS_HANDLED_SETTINGS = frozenset(
     {"voice", "model", "language", "speed", "encoding", "container", "sample_width", "bitrate"}
 )
 
-# Accepted for backward compatibility but ignored: output is always 16-bit PCM and ``bitrate``
-# only applies to MP3, which Pipecat cannot play.
-_DEPRECATED_TTS_SETTINGS = ("sample_width", "bitrate")
-_warned_deprecated: set[str] = set()
-
 # Pipecat pipelines carry raw 16-bit PCM, so only PCM output is usable. Other encodings and
 # containers (mp3, ogg/opus, mulaw, alaw) would be emitted as audio frames and play as noise.
 _PCM_ENCODING = "linear_pcm"
 _PCM_CONTAINERS = ("wav", "raw")
+
+# Accepted for backward compatibility but ignored: output is always 16-bit PCM and ``bitrate``
+# only applies to MP3, which Pipecat cannot play.
+_DEPRECATED_TTS_SETTINGS = ("sample_width", "bitrate")
+_warned_deprecated: set[str] = set()
 
 
 def _strip_wav_header(data: bytes) -> bytes:
@@ -263,6 +265,10 @@ def _settings_model(settings) -> str:
     return cast("str", model)
 
 
+def _default_voice(model: str) -> str:
+    return "Avinash" if model == TV30 else "Pranav"
+
+
 def _settings_speed(settings) -> float | None:
     speed = _given_or_none(getattr(settings, "speed", None))
     return None if speed is None else float(speed)
@@ -285,15 +291,16 @@ def _validate_tts_settings(settings) -> None:
 
 
 def _build_tts_payload(text: str, settings, sample_rate: int) -> dict:
+    model = _settings_model(settings)
     _validate_tts_settings(settings)
     payload = {
         "text": text,
-        "voice": _settings_voice(settings) or DEFAULT_VOICE,
-        "model": _settings_model(settings),
+        "voice": _settings_voice(settings) or _default_voice(model),
+        "model": model,
         "audio_config": _build_audio_config(settings, sample_rate),
     }
     language = _optional_tts_language_code(settings)
-    if language is not None:
+    if model in TIMBRE_MODELS and language is not None:
         payload["language"] = language
     speed = _settings_speed(settings)
     if speed is not None:
@@ -301,8 +308,33 @@ def _build_tts_payload(text: str, settings, sample_rate: int) -> dict:
     return payload
 
 
-def _apply_tts_settings_update(service) -> None:
-    _validate_tts_settings(service._settings)
+def _apply_tts_settings_update(service, changed: dict[str, Any]) -> None:
+    """Validate a runtime settings update, rolling it back if it is invalid.
+
+    The timbre-v2.5 and timbre-v3.0 voice sets do not overlap, so a model change
+    that names no voice keeps the current voice only if the new model has it,
+    and otherwise switches to the new model's default voice.
+
+    Raises:
+        ValueError: If the updated settings are invalid. The previous settings
+            are restored first, so later requests keep working.
+    """
+    settings = service._settings
+    previous_voice = settings.voice
+    model = _settings_model(settings)
+    if "model" in changed and "voice" not in changed:
+        try:
+            _validate_voice(_settings_voice(settings), model)
+        except ValueError:
+            settings.voice = _default_voice(model)
+
+    try:
+        _validate_tts_settings(settings)
+    except ValueError:
+        settings.voice = previous_voice
+        for key, old_value in changed.items():
+            setattr(settings, key, old_value)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -326,11 +358,11 @@ class GnaniHttpTTSSettings(TTSSettings):
         bitrate: Deprecated and ignored (it only applies to MP3, which Pipecat cannot play).
     """
 
-    speed: float | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    encoding: str | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    container: str | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    sample_width: int | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    bitrate: str | None | NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    speed: float | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    encoding: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    container: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    sample_width: int | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    bitrate: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
 
 @dataclass
@@ -357,7 +389,7 @@ def _default_tts_settings(
     settings_cls: type[GnaniHttpTTSSettings],
     *,
     model: str,
-    voice: str,
+    voice: str | None,
 ) -> GnaniHttpTTSSettings:
     """Build a store-mode settings object with every field explicitly set."""
     return settings_cls(
@@ -413,7 +445,8 @@ class GnaniHttpTTSService(TTSService):
         Args:
             api_key: Gnani Vachana API key for authentication.
             aiohttp_session: Shared aiohttp session for HTTP requests.
-            voice_id: Default voice name (default ``Pranav``). Must belong to ``model``.
+            voice_id: Default voice name. Defaults to Pranav for timbre-v2.5
+                and Avinash for timbre-v3.0.
             model: TTS model identifier.
             sample_rate: Optional output sample rate override. When omitted, negotiated from
                 ``StartFrame``.
@@ -425,10 +458,12 @@ class GnaniHttpTTSService(TTSService):
         default_settings = _default_tts_settings(
             self.Settings,
             model=model,
-            voice=voice_id or DEFAULT_VOICE,
+            voice=voice_id,
         )
         if settings is not None:
             default_settings.apply_update(settings)
+        if _settings_voice(default_settings) is None:
+            default_settings.voice = _default_voice(_settings_model(default_settings))
 
         _validate_tts_settings(default_settings)
 
@@ -471,12 +506,13 @@ class GnaniHttpTTSService(TTSService):
             Dict mapping changed field names to their previous values.
 
         Raises:
-            ValueError: If ``voice`` is not a supported Gnani voice.
+            ValueError: If ``voice`` is not a supported Gnani voice for ``model``.
+                The update is not applied.
         """
         changed = await super()._update_settings(delta)
 
         if _TTS_HANDLED_SETTINGS & changed.keys():
-            _apply_tts_settings_update(self)
+            _apply_tts_settings_update(self, changed)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
         if unhandled:
@@ -599,7 +635,8 @@ class GnaniSSETTSService(TTSService):
         Args:
             api_key: Gnani Vachana API key for authentication.
             aiohttp_session: Shared aiohttp session for HTTP requests.
-            voice_id: Default voice name (default ``Pranav``). Must belong to ``model``.
+            voice_id: Default voice name. Defaults to Pranav for timbre-v2.5
+                and Avinash for timbre-v3.0.
             model: TTS model identifier.
             sample_rate: Optional output sample rate override. When omitted, negotiated from
                 ``StartFrame``.
@@ -611,10 +648,12 @@ class GnaniSSETTSService(TTSService):
         default_settings = _default_tts_settings(
             self.Settings,
             model=model,
-            voice=voice_id or DEFAULT_VOICE,
+            voice=voice_id,
         )
         if settings is not None:
             default_settings.apply_update(settings)
+        if _settings_voice(default_settings) is None:
+            default_settings.voice = _default_voice(_settings_model(default_settings))
 
         _validate_tts_settings(default_settings)
 
@@ -657,12 +696,13 @@ class GnaniSSETTSService(TTSService):
             Dict mapping changed field names to their previous values.
 
         Raises:
-            ValueError: If ``voice`` is not a supported Gnani voice.
+            ValueError: If ``voice`` is not a supported Gnani voice for ``model``.
+                The update is not applied.
         """
         changed = await super()._update_settings(delta)
 
         if _TTS_HANDLED_SETTINGS & changed.keys():
-            _apply_tts_settings_update(self)
+            _apply_tts_settings_update(self, changed)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
         if unhandled:
@@ -837,7 +877,8 @@ class GnaniTTSService(InterruptibleTTSService):
 
         Args:
             api_key: Gnani Vachana API key for authentication.
-            voice_id: Default voice name (default ``Pranav``). Must belong to ``model``.
+            voice_id: Default voice name. Defaults to Pranav for timbre-v2.5
+                and Avinash for timbre-v3.0.
             model: TTS model identifier.
             sample_rate: Optional output sample rate override. When omitted, negotiated from
                 ``StartFrame``.
@@ -849,10 +890,12 @@ class GnaniTTSService(InterruptibleTTSService):
         default_settings = _default_tts_settings(
             self.Settings,
             model=model,
-            voice=voice_id or DEFAULT_VOICE,
+            voice=voice_id,
         )
         if settings is not None:
             default_settings.apply_update(settings)
+        if _settings_voice(default_settings) is None:
+            default_settings.voice = _default_voice(_settings_model(default_settings))
 
         _validate_tts_settings(default_settings)
 
@@ -893,12 +936,13 @@ class GnaniTTSService(InterruptibleTTSService):
             Dict mapping changed field names to their previous values.
 
         Raises:
-            ValueError: If ``voice`` is not a supported Gnani voice.
+            ValueError: If ``voice`` is not a supported Gnani voice for ``model``.
+                The update is not applied.
         """
         changed = await super()._update_settings(delta)
 
         if _TTS_HANDLED_SETTINGS & changed.keys():
-            _apply_tts_settings_update(self)
+            _apply_tts_settings_update(self, changed)
 
         unhandled = {k: v for k, v in changed.items() if k not in _TTS_HANDLED_SETTINGS}
         if unhandled:
@@ -949,6 +993,22 @@ class GnaniTTSService(InterruptibleTTSService):
         if self._teardown_done:
             return
         self._teardown_done = True
+        await self._disconnect_websocket()
+
+    async def _connect(self):
+        """Open the WebSocket.
+
+        ``InterruptibleTTSService`` calls ``_disconnect()`` then ``_connect()`` when
+        the user interrupts the bot, so the server stops streaming the interrupted
+        reply. The base implementations only toggle a flag, so the socket has to
+        be opened and closed here.
+        """
+        await super()._connect()
+        await self._connect_websocket()
+
+    async def _disconnect(self):
+        """Close the WebSocket and cancel the receive task."""
+        await super()._disconnect()
         await self._disconnect_websocket()
 
     @traced_tts
@@ -1051,8 +1111,9 @@ class GnaniTTSService(InterruptibleTTSService):
             self._ws = None
 
     async def _receive_messages(self):
+        ws = self._ws
         try:
-            async for msg in self._ws:
+            async for msg in ws:
                 if isinstance(msg, bytes):
                     await self._handle_audio_chunk(msg)
                     continue
@@ -1103,6 +1164,12 @@ class GnaniTTSService(InterruptibleTTSService):
             )
             await self.push_error(error_msg=f"Gnani TTS receive error: {e}", exception=e)
             await self._call_event_handler("on_connection_error", f"{e}")
+
+        # The socket ended on its own (server close, idle timeout, network drop).
+        # Forget it so the next run_tts() reconnects instead of sending into it.
+        if self._ws is ws:
+            self._ws = None
+            await ws.close()
 
     async def _handle_audio_chunk(self, audio_bytes: bytes):
         audio_bytes = self._pcm_processor.process(audio_bytes)

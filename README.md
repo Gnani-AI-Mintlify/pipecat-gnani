@@ -232,44 +232,44 @@ Pass settings through the service's `Settings` class, for example `GnaniSTTServi
 
 | Setting | Services | Default | Description |
 |---------|----------|---------|-------------|
-| `language` | both | `Language.EN_IN` | A `Language`, a locale string (`"hi-IN"`), or `INDIC_AUTO` for automatic detection (`prisma-v3.0`). |
+| `language` | both | `Language.EN_IN` | A `Language`, a locale string (`"hi-IN"`), or `"indic-auto"` (or `INDIC_AUTO_LANGUAGE_CODE`) for automatic detection (`prisma-v3.0`). |
 | `model` | both | server default (`prisma-v2.5`) | `"prisma-v2.5"` or `"prisma-v3.0"`. |
 | `format` | both | `verbatim` | `verbatim` or `transcribe` (inverse text normalization: numbers, dates, currency). `codemix` and `transliterate` need `prisma-v3.0`. |
 | `itn_native_numerals` | both | off | With `format="transcribe"`, write digits in the native script. |
-| `language_candidates` | both | none | 2-4 likely languages. Only with `language=INDIC_AUTO` and `prisma-v3.0`. A hint, not a lock. |
-| `keyterms` | both | none | Up to 200 words or phrases to favour. `prisma-v3.0` only. |
-| `topic` | both | none | Free-text description of the audio, up to 1,600 characters. `prisma-v3.0` only. |
-| `previous_text` | both | none | What was said just before (last 600 characters are used). `prisma-v3.0` only. |
-| `speaker_names` | both | none | 1-4 speaker names. `prisma-v3.0` only. |
+| `language_candidates` | both | none | 2-4 likely languages. Only with `language="indic-auto"` and `prisma-v3.0`. A hint, not a lock. |
+| `keywords` | both | none | Up to 200 words or phrases to favour. `prisma-v3.0` only. |
+| `topic` | REST | none | Free-text description of the audio, up to 1,600 characters. `prisma-v3.0` only. |
+| `previous_text` | REST | none | What was said just before (last 600 characters are used). `prisma-v3.0` only. |
+| `speaker_names` | REST | none | 1-4 speaker names. `prisma-v3.0` only. |
 | `sample_rate` | WebSocket | `16000` | `8000`, `16000`, `44100` or `48000`. |
 
-Changing `language`, `format`, `model`, candidates or context hints on a running WebSocket STT service reconnects it with the new values.
+Changing `language`, `format`, `model`, candidates or `keywords` on a running WebSocket STT service reconnects it with the new values. All validation rules come from the `gnani-vachana` SDK.
 
 #### Automatic language detection
 
 ```python
-from pipecat_gnani import INDIC_AUTO, GnaniSTTService
+from pipecat_gnani import INDIC_AUTO_LANGUAGE_CODE, GnaniSTTService
 
 stt = GnaniSTTService(
     api_key=os.environ["GNANI_API_KEY"],
     settings=GnaniSTTService.Settings(
         model="prisma-v3.0",
-        language=INDIC_AUTO,
+        language=INDIC_AUTO_LANGUAGE_CODE,  # same as "indic-auto"
         language_candidates=[Language.HI_IN, Language.EN_IN],  # recommended
-        keyterms=["Gnani", "Vachana"],
+        keywords=["Gnani", "Vachana"],
     ),
 )
 ```
 
 Each `TranscriptionFrame.language` carries the language the API detected (falling back to the configured one), so downstream processors can react to it.
 
-> **Tip:** pass `language_candidates` when you use `INDIC_AUTO`. Bare `INDIC_AUTO` on short utterances followed by silence can mis-detect the language (for example English audio reported as Telugu on the REST endpoint). Candidates, or a fixed language, are more reliable.
+> **Tip:** pass `language_candidates` when you use `"indic-auto"`. Bare `"indic-auto"` on short utterances followed by silence can mis-detect the language (for example English audio reported as Telugu on the REST endpoint). Candidates, or a fixed language, are more reliable.
 
 ### TTS settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `voice` | `Pranav` | Voice name. Must belong to the selected model. |
+| `voice` | `Pranav` on v2.5, `Avinash` on v3.0 | Voice name. Must belong to the selected model. Switching `model` at runtime without a `voice` moves to the new model's default voice. |
 | `model` | `timbre-v2.5` | `timbre-v2.5` or `timbre-v3.0`. |
 | `language` | none | `"auto"`, a locale such as `"hi-IN"`, or a `Language`. Works on both models. |
 | `speed` | server default (1.0) | Speaking rate, `0.85` to `1.15`. Can be changed at runtime. |
@@ -315,7 +315,7 @@ Frames must be sent at **real-time cadence**. See **[STT Realtime — PCM Specif
 
 ### STT Languages (Speech-to-Text)
 
-STT uses BCP-47 locale codes with the `-IN` suffix: `bn-IN`, `en-IN`, `gu-IN`, `hi-IN`, `kn-IN`, `ml-IN`, `mr-IN`, `pa-IN`, `ta-IN`, `te-IN`. `INDIC_AUTO` (`prisma-v3.0`) detects the language automatically.
+STT uses BCP-47 locale codes with the `-IN` suffix: `bn-IN`, `en-IN`, `gu-IN`, `hi-IN`, `kn-IN`, `ml-IN`, `mr-IN`, `pa-IN`, `ta-IN`, `te-IN`. `"indic-auto"` (`prisma-v3.0`) detects the language automatically.
 
 For the full list of supported languages, see [STT — Supported Languages](https://docs.gnani.ai/api/STT/speech-to-text#supported-languages).
 

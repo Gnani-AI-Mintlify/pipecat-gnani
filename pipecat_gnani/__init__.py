@@ -7,6 +7,7 @@ Services:
     STT:
     - GnaniHttpSTTService: REST-based file transcription (requires VAD)
     - GnaniSTTService: WebSocket streaming speech-to-text with VAD
+    Both support the multilingual ``prisma-v3.0`` model (``model="prisma-v3.0"``).
 
     TTS:
     - GnaniHttpTTSService: REST-based text-to-speech
@@ -19,15 +20,20 @@ API docs: https://docs.gnani.ai/api/introduction/introduction
 __version__ = "0.6.0"
 from pipecat_gnani._common import (
     DEFAULT_MODEL,
-    DEFAULT_VOICE,
-    INDIC_AUTO,
     STT_FORMAT_TRANSCRIBE,
     STT_FORMAT_VERBATIM,
     SUPPORTED_SAMPLE_RATES,
     SUPPORTED_TTS_LANGUAGES,
     SUPPORTED_VOICES,
+    TIMBRE_MODELS,
     TIMBRE_V25_VOICES,
     TIMBRE_V30_VOICES,
+)
+from pipecat_gnani._prisma import (
+    INDIC_AUTO_LANGUAGE_CODE,
+    PRISMA_V3_LANGUAGES,
+    PRISMA_V3_MODEL,
+    STT_FORMAT_CODEMIX,
 )
 from pipecat_gnani.stt import (
     GnaniHttpSTTService,
@@ -46,13 +52,16 @@ from pipecat_gnani.tts import (
 
 __all__ = [
     "DEFAULT_MODEL",
-    "DEFAULT_VOICE",
-    "INDIC_AUTO",
+    "INDIC_AUTO_LANGUAGE_CODE",
+    "PRISMA_V3_LANGUAGES",
+    "PRISMA_V3_MODEL",
+    "STT_FORMAT_CODEMIX",
     "STT_FORMAT_TRANSCRIBE",
     "STT_FORMAT_VERBATIM",
     "SUPPORTED_SAMPLE_RATES",
     "SUPPORTED_TTS_LANGUAGES",
     "SUPPORTED_VOICES",
+    "TIMBRE_MODELS",
     "TIMBRE_V25_VOICES",
     "TIMBRE_V30_VOICES",
     "GnaniHttpSTTService",

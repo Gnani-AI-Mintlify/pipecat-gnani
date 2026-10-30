@@ -9,26 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **STT model selection** — new `model` setting on both STT services: `prisma-v2.5` (default, server default when unset) or `prisma-v3.0`. Unknown models are rejected up front.
-- **Prisma v3.0 features (STT)** — `INDIC_AUTO` language (`"indic-auto"`) for automatic language detection, `language_candidates` (2-4 likely languages), the `codemix` and `transliterate` formats, and context hints `keyterms`, `topic`, `previous_text` and `speaker_names`. All are validated with the SDK's rules and refused on `prisma-v2.5`. Changing any of them on a running WebSocket STT service reconnects it.
-- **Detected language on transcripts** — `TranscriptionFrame.language` now carries the API's `detected_language_code` (REST and WebSocket), falling back to the configured language.
-- **TTS `timbre-v3.0` support** — 13 voices (`TIMBRE_V30_VOICES`). `language` is now sent for both `timbre-v2.5` and `timbre-v3.0` (it was dropped for v3.0).
+- **`prisma-v3.0` STT model** on both `GnaniHttpSTTService` (REST) and `GnaniSTTService` (WebSocket), opt-in with `Settings(model="prisma-v3.0")`. Without `model`, requests are unchanged and use the default model. `Settings.model` is now sent (`model` form field / `x-model` header); it was previously accepted and ignored. Unknown model names are rejected up front.
+  - `language="indic-auto"` lets the model identify the language.
+  - `language_candidates`: 2-4 likely languages with `"indic-auto"` (sent as `multi_lang_codes` / `x-language-candidates`).
+  - `keywords` (both services); `topic`, `previous_text` and `speaker_names` (REST); `format="codemix"` and `"transliterate"`.
+  - prisma-v3.0-only options, unsupported languages (e.g. `as-IN`), out-of-range values and invalid context raise `ValueError` at construction and on settings updates (the previous settings are kept), not as a 400 mid-call. **All rules come from the `gnani-vachana` SDK** (>= 0.9.0), the single source of truth. Changing `language` away from `"indic-auto"` clears `language_candidates`, as the server does.
+  - `TranscriptionFrame.language` is the language the model reported for that transcript (`detected_language_code`), so it follows a caller who switches language. A REST transcript cut short by the model (`truncated`) is logged as a warning.
+  - Exports `PRISMA_V3_MODEL`, `PRISMA_V3_LANGUAGES`, `INDIC_AUTO_LANGUAGE_CODE` and `STT_FORMAT_CODEMIX`.
+- **`timbre-v3.0` TTS model**: 13 new voices (Avinash, Chetana, Devansh, Harshad, Kalpana, Lakshmi, Prakash, Riyaa, Shivani, Shubham, Tarika, Vasudha, Yashraj). Select it with `model="timbre-v3.0"`; `language` is sent in REST/SSE/WebSocket payloads as for `timbre-v2.5`. The default voice is model-aware: `Pranav` for `timbre-v2.5`, `Avinash` for `timbre-v3.0`. Switching `model` at runtime (`TTSUpdateSettingsFrame`) without a `voice` moves to the new model's default voice when the current one isn't available on it.
 - **TTS `speed`** setting (0.85 to 1.15) on all three TTS services, updatable at runtime.
-- **`INDIC_AUTO`, `TIMBRE_V30_VOICES`** exports.
+- Re-exported `TIMBRE_MODELS` and `TIMBRE_V30_VOICES`.
 
 ### Changed
 
-- **Dependency ranges** — `pipecat-ai>=1.5.0,<2.0` (was `>=0.0.50`, unbounded) and `gnani-vachana>=0.9.0,<1.0` (was `>=0.7.9`). Verified on Pipecat 1.5.0 and 1.15.0.
-- **Default TTS model comes from the SDK** (`timbre-v2.5`) instead of being hard-coded; default voice is `Pranav`.
-- **Audio format is validated** — only `linear_pcm` with a `wav` or `raw` container is accepted. `mulaw`, `alaw`, `mp3` and `ogg` raise `ValueError` instead of being emitted as unplayable audio frames.
+- **Dependency ranges**: `pipecat-ai>=1.5.0,<2.0` (was `>=0.0.50`, unbounded) and `gnani-vachana>=0.9.0,<1.0` (was `>=0.7.9`). Verified on Pipecat 1.5.0 and 1.15.0. 0.8.x of the SDK removed `TIMBRE_V20_VOICES`, so `import pipecat_gnani` 0.5.12 raised `ImportError` on any fresh install that resolved it.
+- **BREAKING:** `timbre-v2.0` is no longer supported by the SDK. The default model is now `timbre-v2.5` (the SDK's `DEFAULT_MODEL`), and `TIMBRE_V20_VOICES` is no longer exported. Pranav, Kaveri and Deepak are also `timbre-v2.5` voices, so code that only set one of them as `voice` keeps working; **`Shubhra` is not**, and now raises `ValueError`: pick a `timbre-v2.5` voice (see `TIMBRE_V25_VOICES`).
+- **Audio format is validated**: only `linear_pcm` with a `wav` or `raw` container is accepted. `mulaw`, `alaw`, `mp3` and `ogg` raise `ValueError` instead of being emitted as unplayable audio frames.
 - **Unsupported pipeline sample rates** now log a warning when the TTS service starts (it falls back to 16 kHz as before).
 - **README and docs page** rewritten for the new models and settings; the stale voice table (Shubhra, 4 voices) is gone.
 
 ### Fixed
 
+- **`TranscriptionFrame.language` was always `None`.** pipecat stores the configured language as a string (`"hi-IN"`), which the services did not map back to `Language`. Frames now carry the configured language (or the detected one with prisma-v3.0).
+- **WebSocket `itn_native_numerals` had no effect.** It was sent as an `itn_native_numerals` header, which the server does not read; it is now `x-itn-native-numerals`.
+- **A rejected runtime settings update left the TTS service unusable.** An invalid `TTSUpdateSettingsFrame` (e.g. a voice the model doesn't have) raised `ValueError` but kept the bad values, so every later request failed too. The previous settings are now restored.
 - **Pipecat 1.15 "TTS context ... completed with no audio" error after every utterance** on `GnaniTTSService` (WebSocket TTS): audio and the stop frame are now routed through Pipecat's audio context. An error from the server also closes the context instead of waiting for the idle timeout.
-- **Import errors with newer dependencies** — `NotGiven` (Pipecat >= 1.8, previously `_NotGiven`) and the removal of `TIMBRE_V20_VOICES` (SDK >= 0.8.2).
-- **`TranscriptionFrame.language` was `None`** for requests where the API returns no detected language (all `prisma-v2.5` requests).
+- **Import error on pipecat-ai >= 1.8**: pipecat 1.8 renamed the private `pipecat.services.settings._NotGiven` sentinel type to the public `NotGiven`, so `import pipecat_gnani` raised `ImportError` on any install that resolved pipecat 1.8 or newer. The type is now imported from `_common.py`, trying `NotGiven` first and falling back to `_NotGiven` for older pipecat versions.
+- WebSocket STT and TTS lifecycle: sockets are no longer leaked on errors or failed handshakes, and WebSocket TTS reconnects after an interruption or a dropped connection.
 
 ### Deprecated
 
@@ -41,6 +48,7 @@ Still work, will be removed in a future release:
 
 - **`timbre-v2.0`** model and the `TIMBRE_V20_VOICES` export (the model is retired by the API).
 - Support for Pipecat older than 1.5.
+
 
 ## [0.5.12] - 2026-08-17
 
