@@ -4,23 +4,21 @@ import platform
 import uuid
 from typing import Any
 
+from websockets.asyncio.client import connect as websocket_connect
+
 import pipecat_gnani
 
 
-def ws_header_kwargs(headers: dict[str, str]) -> dict[str, Any]:
-    """Return the correct ``connect()`` header kwarg for the installed websockets.
+async def ws_connect(service: Any, uri: str, headers: dict[str, str]) -> Any:
+    """Open a WebSocket for ``service``.
 
-    websockets >= 13 renamed ``extra_headers`` to ``additional_headers``. Support
-    both so WebSocket STT/TTS work when another dependency pins websockets < 13.
+    Pipecat 1.14+ provides ``_websocket_connect()``, which applies the service's
+    send and close timeouts; older releases connect directly.
     """
-    try:
-        import websockets
-
-        major = int(websockets.__version__.split(".", 1)[0])
-    except (ImportError, AttributeError, ValueError):
-        major = 13
-    key = "additional_headers" if major >= 13 else "extra_headers"
-    return {key: headers}
+    connect = getattr(service, "_websocket_connect", None)
+    if connect is not None:
+        return await connect(uri, additional_headers=headers)
+    return await websocket_connect(uri, additional_headers=headers)
 
 
 def _generate_request_id() -> str:

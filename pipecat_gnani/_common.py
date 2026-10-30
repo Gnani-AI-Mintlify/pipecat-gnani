@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from gnani.stt.client import (
+    STREAM_CHUNK_BYTES,  # noqa: F401
     STREAM_SUPPORTED_LANGUAGES,  # noqa: F401
     STREAM_SUPPORTED_SAMPLE_RATES,
 )
@@ -24,12 +25,13 @@ from gnani.tts.client import (  # type: ignore[import-untyped]
     TIMBRE_V25_VOICES,  # noqa: F401
     TIMBRE_V30_VOICES,  # noqa: F401
 )
+from pipecat.services.settings import NOT_GIVEN, is_given  # noqa: F401
 from pipecat.transcriptions.language import Language, resolve_language
 
 try:
-    from pipecat.services.settings import NotGiven as _NotGiven
+    from pipecat.services.settings import NotGiven
 except ImportError:  # pipecat < 1.8 only exposed the private name
-    from pipecat.services.settings import _NotGiven  # type: ignore[no-redef]  # noqa: F401
+    from pipecat.services.settings import _NotGiven as NotGiven  # type: ignore[no-redef]  # noqa: F401
 
 GNANI_STT_REST_URL = "https://api.vachana.ai/stt/v3"
 GNANI_STT_WS_URL = "wss://api.vachana.ai/stt/v3/stream"
@@ -56,7 +58,6 @@ STT_LANGUAGE_MAP = cast(
         Language.KN_IN: "kn-IN",
         Language.ML_IN: "ml-IN",
         Language.MR_IN: "mr-IN",
-        Language.OR_IN: "or-IN",
         Language.PA_IN: "pa-IN",
         Language.TA_IN: "ta-IN",
         Language.TE_IN: "te-IN",
@@ -66,8 +67,6 @@ STT_LANGUAGE_MAP = cast(
 TTS_LANGUAGE_MAP = cast(
     "dict[Language, str]",
     {
-        Language.AS: "as-IN",
-        Language.AS_IN: "as-IN",
         Language.BN: "bn-IN",
         Language.BN_IN: "bn-IN",
         Language.EN: "en-IN",
@@ -82,8 +81,6 @@ TTS_LANGUAGE_MAP = cast(
         Language.ML_IN: "ml-IN",
         Language.MR: "mr-IN",
         Language.MR_IN: "mr-IN",
-        Language.OR: "or-IN",
-        Language.OR_IN: "or-IN",
         Language.PA: "pa-IN",
         Language.PA_IN: "pa-IN",
         Language.TA: "ta-IN",
