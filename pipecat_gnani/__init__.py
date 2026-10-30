@@ -34,6 +34,7 @@ from pipecat_gnani._prisma import (
     PRISMA_V3_LANGUAGES,
     PRISMA_V3_MODEL,
     STT_FORMAT_CODEMIX,
+    STT_FORMAT_TRANSLITERATE,
 )
 from pipecat_gnani.stt import (
     GnaniHttpSTTService,
@@ -57,6 +58,7 @@ __all__ = [
     "PRISMA_V3_MODEL",
     "STT_FORMAT_CODEMIX",
     "STT_FORMAT_TRANSCRIBE",
+    "STT_FORMAT_TRANSLITERATE",
     "STT_FORMAT_VERBATIM",
     "SUPPORTED_SAMPLE_RATES",
     "SUPPORTED_TTS_LANGUAGES",

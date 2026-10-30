@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `STT_FORMAT_TRANSLITERATE` export for prisma-v3.0's `transliterate` format.
+
+### Changed
+
+- Requires `websockets>=13.1` and `aiohttp>=3.11.12,<4`, matching Pipecat 1.5's bounds. Still supports `pipecat-ai>=1.5.0,<2.0`; tested on 1.5.0, 1.14.0 and 1.15.0.
+- **BREAKING:** `Language.OR`/`OR_IN` (Odia) are no longer mapped for STT or TTS, and `Language.AS`/`AS_IN` (Assamese) no longer for TTS, matching the Gnani API. STT keeps Assamese on Prisma v2.5.
+- `GnaniSTTService` is built on `WebsocketSTTService`: it connects in `start()`, reconnects with backoff when the connection drops, and `keepalive_timeout` now sends silence instead of failing.
+- `GnaniSTTService` sends audio in the fixed 1,024-byte frames the streaming API requires.
+- `GnaniTTSService` sends one request at a time and connects in `start()`.
+- WebSocket connections use Pipecat's send and close timeouts on Pipecat 1.14+.
+- Foundational example uses `PipelineWorker` and `WorkerRunner`.
+
+### Fixed
+
+- `GnaniSTTService` left the socket open when the WebSocket handshake succeeded but the `connected` message was late or malformed.
+- `GnaniTTSService` kept playing audio from an interrupted request: interruptions now reset the Gnani WebSocket.
+- Streaming transcripts were not marked `finalized`, so user turns waited out the STT timeout before ending.
+- `GnaniSSETTSService` handles the documented `chunk`/`complete` events, so streams end on `complete` and `error` events are pushed upstream.
+- Streaming STT reports usage metrics per transcript (Pipecat 1.14+).
+- HTTP STT, HTTP TTS and SSE TTS reported each failure twice (`push_error` plus a yielded `ErrorFrame`); each failure now produces one `ErrorFrame`.
+- `GnaniSTTService` labelled audio at a pipeline rate Gnani does not accept (e.g. 24 kHz) as 16 kHz. Audio is now resampled to the rate sent to Gnani, and the `sample_rate` setting selects that rate.
+- TTS services convert `Language` values through `language_to_service_language()`, so settings store Gnani codes like `hi-IN`.
+
+### Removed
+
+- `ws_header_kwargs()` websockets<13 compatibility helper.
+- Local PCM-to-WAV wrapping in `GnaniHttpSTTService`; Pipecat passes WAV segments to `run_stt`.
+
 ## [0.6.0] - 2026-10-30
 
 ### Added

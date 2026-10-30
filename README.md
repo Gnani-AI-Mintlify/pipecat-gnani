@@ -86,7 +86,7 @@ import os
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
@@ -133,7 +133,7 @@ pipeline = Pipeline(
     ]
 )
 
-task = PipelineTask(
+worker = PipelineWorker(
     pipeline,
     params=PipelineParams(enable_metrics=True),
 )
@@ -217,12 +217,12 @@ tts = GnaniTTSService(
 
 | | Model | Notes |
 |---|-------|-------|
-| STT | `prisma-v2.5` (default) | Languages: the 10 listed below. Formats: `verbatim`, `transcribe`. |
+| STT | `prisma-v2.5` (default) | One language per request or stream. Formats: `verbatim`, `transcribe`. |
 | STT | `prisma-v3.0` | Adds `indic-auto` language detection, language candidates, extra formats (`codemix`, `transliterate`) and context hints. Set `model="prisma-v3.0"`. |
 | TTS | `timbre-v2.5` (default) | 42 voices. |
 | TTS | `timbre-v3.0` | 13 voices. Set `model="timbre-v3.0"` and pick a v3.0 voice (a voice must belong to the chosen model). |
 
-`timbre-v2.0` has been retired and is rejected.
+`timbre-v2.0` has been retired and is rejected. See [STT Models](https://docs.gnani.ai/api/STT/models/overview) and [Prisma v3.0](https://docs.gnani.ai/api/STT/models/prisma-v3).
 
 ## Settings
 
@@ -241,9 +241,9 @@ Pass settings through the service's `Settings` class, for example `GnaniSTTServi
 | `topic` | REST | none | Free-text description of the audio, up to 1,600 characters. `prisma-v3.0` only. |
 | `previous_text` | REST | none | What was said just before (last 600 characters are used). `prisma-v3.0` only. |
 | `speaker_names` | REST | none | 1-4 speaker names. `prisma-v3.0` only. |
-| `sample_rate` | WebSocket | `16000` | `8000`, `16000`, `44100` or `48000`. |
+| `sample_rate` | WebSocket | pipeline rate, else `16000` | `8000`, `16000`, `44100` or `48000`. Pipeline audio is resampled to it. |
 
-Changing `language`, `format`, `model`, candidates or `keywords` on a running WebSocket STT service reconnects it with the new values. All validation rules come from the `gnani-vachana` SDK.
+Changing `language`, `format`, `model`, candidates or `keywords` on a running WebSocket STT service reconnects it with the new values. All validation rules come from the `gnani-vachana` SDK. REST audio is limited to 30 s per segment.
 
 #### Automatic language detection
 
@@ -286,7 +286,7 @@ Audio is always 16-bit PCM, which is what Pipecat plays. The `encoding` and `con
 | Service | Transport | Base Class | Description |
 |---------|-----------|------------|-------------|
 | `GnaniHttpSTTService` | REST POST | `SegmentedSTTService` | File-based transcription via `POST /stt/v3`. Requires VAD in pipeline. |
-| `GnaniSTTService` | WebSocket | `STTService` | Real-time streaming via `wss://api.vachana.ai/stt/v3/stream` with VAD events. Emits `TranscriptionFrame` (final) and `InterimTranscriptionFrame` when the API sets `is_final: false` (today Gnani sends final transcripts only). |
+| `GnaniSTTService` | WebSocket | `WebsocketSTTService` | Real-time streaming via `wss://api.vachana.ai/stt/v3/stream` with server-side VAD. Emits one finalized `TranscriptionFrame` per speech segment, and reconnects automatically. |
 
 #### Streaming PCM Specification
 
@@ -301,7 +301,7 @@ All streaming audio must be sent as **raw PCM binary frames** — no container f
 | **Bytes per frame** | **1,024 bytes** (512 samples × 2 bytes) | **1,024 bytes** (512 samples × 2 bytes)   |
 | Frame duration    | 32 ms                                     | 64 ms                                     |
 
-Frames must be sent at **real-time cadence**. See **[STT Realtime — PCM Specification](https://docs.gnani.ai/api/STT/stt-websocket#pcm-specification)** for full details.
+`GnaniSTTService` re-frames pipeline audio into 1,024-byte frames for you. Frames must be sent at **real-time cadence**. See **[STT Realtime — PCM Specification](https://docs.gnani.ai/api/STT/stt-websocket#pcm-specification)** for full details.
 
 ### TTS Services
 
@@ -309,7 +309,7 @@ Frames must be sent at **real-time cadence**. See **[STT Realtime — PCM Specif
 |---------|-----------|------------|-------------|
 | `GnaniHttpTTSService` | REST POST | `TTSService` | Single-request synthesis via `POST /api/v1/tts/inference`. |
 | `GnaniSSETTSService` | SSE | `TTSService` | Streaming synthesis via `POST /api/v1/tts/sse`. Lower latency than REST. |
-| `GnaniTTSService` | WebSocket | `InterruptibleTTSService` | Streaming via `wss://api.vachana.ai/api/v1/tts`. Lowest latency, interruption support. `TTSTextFrame`s are emitted by the Pipecat base class after each synthesis request. |
+| `GnaniTTSService` | WebSocket | `InterruptibleTTSService` | Streaming via `wss://api.vachana.ai/api/v1/tts`. Lowest latency. Sends one request at a time and resets the connection on interruption. |
 
 ## Supported Languages
 
@@ -321,7 +321,7 @@ For the full list of supported languages, see [STT — Supported Languages](http
 
 ### TTS Languages (Text-to-Speech)
 
-TTS uses the same `-IN` locale codes as STT (`hi-IN`, `en-IN`, ...), plus `auto`. Pipecat `Language` values are converted for you; languages Gnani TTS does not support (for example `or-IN`) raise `ValueError`.
+TTS uses the same BCP-47 locale codes (e.g. `hi-IN`, `bn-IN`), plus `auto` and `hi-en` (Hinglish). `language` is optional.
 
 For the full list of supported languages, see [TTS — Supported Languages](https://docs.gnani.ai/api/TTS/tts-inference#supported-languages).
 
@@ -330,7 +330,7 @@ For the full list of supported languages, see [TTS — Supported Languages](http
 The full catalog, with gender and style, is in the [official voice list](https://docs.gnani.ai/api/TTS/available-voices). Every voice belongs to one model:
 
 - **`timbre-v2.5`**: 42 voices, for example `Pranav` (default), `Kaveri`, `Nalini`, `Asmita`, `Deepak`.
-- **`timbre-v3.0`**: 13 voices: `Avinash`, `Chetana`, `Devansh`, `Harshad`, `Kalpana`, `Lakshmi`, `Prakash`, `Riyaa`, `Shivani`, `Shubham`, `Tarika`, `Vasudha`, `Yashraj`.
+- **`timbre-v3.0`**: 13 voices: `Avinash`, `Chetana`, `Devansh`, `Harshad`, `Kalpana`, `Lakshmi`, `Prakash`, `Riyaa`, `Shivani`, `Shubham`, `Tarika`, `Vasudha`, `Yashraj`. Supports audio tags such as `<laugh>`.
 
 The lists are available in code as `pipecat_gnani.TIMBRE_V25_VOICES` and `pipecat_gnani.TIMBRE_V30_VOICES`.
 
@@ -344,7 +344,7 @@ pipecat-gnani            ← This package (Pipecat service adapters)
   └── TTS: REST + SSE + WebSocket
 ```
 
-The `gnani` SDK supplies the model catalog, voices, languages and validation rules; this package makes the API calls and adapts them to Pipecat's `SegmentedSTTService`, `STTService`, `TTSService`, and `InterruptibleTTSService` base classes.
+The `gnani` SDK supplies the model catalog, voices, languages and validation rules; this package makes the API calls and adapts them to Pipecat's `SegmentedSTTService`, `WebsocketSTTService`, `TTSService`, and `InterruptibleTTSService` base classes.
 
 ## Documentation
 
@@ -359,7 +359,7 @@ The `gnani` SDK supplies the model catalog, voices, languages and validation rul
 
 ## Pipecat Compatibility
 
-Supports **Pipecat 1.5 and newer 1.x releases** (`pipecat-ai>=1.5.0,<2.0`). Tested on 1.5.0 and 1.15.0.
+Supports **Pipecat 1.5 and newer 1.x releases** (`pipecat-ai>=1.5.0,<2.0`). Tested on 1.5.0, 1.14.0 and 1.15.0.
 
 ## License
 

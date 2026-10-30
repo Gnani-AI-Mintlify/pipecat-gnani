@@ -18,10 +18,10 @@ from typing import Any
 from gnani.stt._prisma import (  # type: ignore[import-untyped]
     INDIC_AUTO_LANGUAGE_CODE,
     PRISMA_V3_MODEL,
-    build_context,  # noqa: F401  (re-exported for the services)
-    is_prisma_v3,  # noqa: F401
-    normalize_model,  # noqa: F401
-    require_prisma_v3,  # noqa: F401
+    build_context,
+    is_prisma_v3,
+    normalize_model,
+    require_prisma_v3,
 )
 from gnani.stt._prisma import check_format as _sdk_check_format
 from gnani.stt._prisma import parse_candidates as _sdk_parse_candidates
@@ -34,6 +34,7 @@ from pipecat.services.settings import is_given
 from pipecat.transcriptions.language import Language
 
 STT_FORMAT_CODEMIX = "codemix"
+STT_FORMAT_TRANSLITERATE = "transliterate"
 
 # Models the plugin accepts. ``None`` (not set) uses the server default, prisma-v2.5.
 STT_MODELS = ("prisma-v2.5", PRISMA_V3_MODEL)
@@ -49,7 +50,7 @@ def is_set(value: Any) -> bool:
     return not (isinstance(value, list | tuple | set | frozenset) and not value)
 
 
-def check_format(fmt: Any, model: Any, *, streaming: bool = False) -> None:  # noqa: ARG001
+def check_format(fmt: Any, model: Any) -> None:
     """Raise if ``fmt`` is not valid for this model (REST and streaming share the rules)."""
     if is_set(fmt):
         _sdk_check_format(fmt, model)
@@ -71,7 +72,9 @@ def _candidate_code(value: Any) -> Any:
     return value.value if isinstance(value, Language) else value
 
 
-def parse_candidates(value: Any, language: Any, model: Any, *, streaming: bool = False) -> list[str]:
+def parse_candidates(
+    value: Any, language: Any, model: Any, *, streaming: bool = False
+) -> list[str]:
     """Return 2-4 distinct candidate languages as BCP-47 codes (order kept).
 
     Candidates are ``prisma-v3.0`` only and apply only with ``indic-auto``; the API would
@@ -96,6 +99,7 @@ __all__ = [
     "PRISMA_V3_LANGUAGES",
     "PRISMA_V3_MODEL",
     "STT_FORMAT_CODEMIX",
+    "STT_FORMAT_TRANSLITERATE",
     "STT_MODELS",
     "build_context",
     "check_format",

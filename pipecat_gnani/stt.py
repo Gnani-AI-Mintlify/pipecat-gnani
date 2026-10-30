@@ -14,36 +14,37 @@ API docs: https://docs.gnani.ai/api/STT/speech-to-text
 
 import asyncio
 import copy
-import io
 import json
-import wave
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
 from loguru import logger
+from pipecat.audio.utils import create_stream_resampler
 from pipecat.frames.frames import (
-    CancelFrame,
-    EndFrame,
     ErrorFrame,
     Frame,
     InterimTranscriptionFrame,
     StartFrame,
     TranscriptionFrame,
 )
-from pipecat.services.settings import NOT_GIVEN, STTSettings, is_given
-from pipecat.services.stt_service import SegmentedSTTService, STTService
+from pipecat.services.settings import STTSettings
+from pipecat.services.stt_service import SegmentedSTTService, WebsocketSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.tracing.service_decorators import traced_stt
+from websockets.protocol import State
 
 from pipecat_gnani._common import (
     GNANI_STT_REST_URL,
     GNANI_STT_WS_URL,
+    NOT_GIVEN,
+    STREAM_CHUNK_BYTES,
     STT_SUPPORTED_SAMPLE_RATES,
-    _NotGiven,
+    NotGiven,
     get_language_string,
+    is_given,
     language_from_gnani,
     settings_language,
     stt_language_to_gnani,
@@ -55,26 +56,13 @@ from pipecat_gnani._prisma import (
     check_format,
     check_language,
     is_prisma_v3,
-    normalize_model,
     is_set,
+    normalize_model,
     parse_candidates,
     require_prisma_v3,
 )
-from pipecat_gnani._sdk import _generate_request_id, sdk_headers, ws_header_kwargs
+from pipecat_gnani._sdk import _generate_request_id, sdk_headers, ws_connect
 
-try:
-    from websockets.asyncio.client import connect as websocket_connect
-except ModuleNotFoundError as e:
-    logger.error(f"Exception: {e}")
-    logger.error(
-        "In order to use Gnani STT, you need to "
-        "`pip install pipecat-gnani` or `pip install websockets gnani`."
-    )
-    raise Exception(f"Missing module: {e}")
-
-
-# Default sample rate used to wrap raw PCM when the pipeline has not negotiated
-# one (e.g. the service is driven directly, outside a running pipeline).
 _DEFAULT_STT_SAMPLE_RATE = 16000
 
 
@@ -95,6 +83,7 @@ def _make_transcript_frame(
             timestamp=timestamp,
             language=language,
             result=result,
+            finalized=True,
         )
     return InterimTranscriptionFrame(
         text=text,
@@ -103,24 +92,6 @@ def _make_transcript_frame(
         language=language,
         result=result,
     )
-
-
-def _pcm_to_wav(pcm: bytes, sample_rate: int, *, channels: int = 1, sample_width: int = 2) -> bytes:
-    """Wrap raw little-endian PCM samples in a WAV (RIFF) container.
-
-    pipecat delivers VAD-segmented audio to ``run_stt`` as headerless PCM, but
-    the Gnani STT REST endpoint decodes an uploaded audio *file* (via ffmpeg),
-    which rejects raw PCM ("invalid start code in RIFF header"). Give the PCM a
-    WAV header first. ``sample_rate`` must match the PCM's true rate or the
-    transcription will be pitch-shifted.
-    """
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wav:
-        wav.setnchannels(channels)
-        wav.setsampwidth(sample_width)
-        wav.setframerate(sample_rate)
-        wav.writeframes(pcm)
-    return buf.getvalue()
 
 
 def _model_name(model: Any) -> str | None:
@@ -166,7 +137,7 @@ def _build_rest_fields(settings: Any) -> dict[str, str]:
     lang = get_language_string(settings, stt_language_to_gnani) or "en-IN"
     fmt = getattr(settings, "format", None)
     check_language(lang, model)
-    check_format(fmt, model, streaming=False)
+    check_format(fmt, model)
     candidates = parse_candidates(getattr(settings, "language_candidates", None), lang, model)
     context = {
         "keywords": getattr(settings, "keywords", None),
@@ -206,7 +177,7 @@ def _build_ws_option_headers(settings: Any) -> dict[str, str]:
     fmt = getattr(settings, "format", None)
     keywords = getattr(settings, "keywords", None)
     check_language(lang, model, streaming=True)
-    check_format(fmt, model, streaming=True)
+    check_format(fmt, model)
     candidates = parse_candidates(
         getattr(settings, "language_candidates", None), lang, model, streaming=True
     )
@@ -246,8 +217,9 @@ class GnaniHttpSTTSettings(STTSettings):
         language: A ``Language`` or BCP-47 code. With prisma-v3.0,
             ``"indic-auto"`` lets the model identify the language; the
             detected language is set on each ``TranscriptionFrame``.
-        format: 'verbatim' or 'transcribe' (enables ITN); 'codemix' with
-            prisma-v3.0 (English words in Latin script, numbers as words).
+        format: 'verbatim' or 'transcribe' (enables ITN). prisma-v3.0 also takes
+            'codemix' (English words in Latin script, numbers as words) and
+            'transliterate' (Indic speech in Latin letters).
         itn_native_numerals: When format='transcribe', render digits in native script.
         language_candidates: *prisma-v3.0 only, with language="indic-auto"*.
             2-4 languages the speaker is likely to use. A hint, not a limit.
@@ -262,15 +234,15 @@ class GnaniHttpSTTSettings(STTSettings):
     Audio is limited to 30 s per request.
     """
 
-    format: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    itn_native_numerals: bool | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    language_candidates: list[str | Language] | str | None | _NotGiven = field(
+    format: str | NotGiven | None = field(default_factory=lambda: NOT_GIVEN)
+    itn_native_numerals: bool | NotGiven | None = field(default_factory=lambda: NOT_GIVEN)
+    language_candidates: list[str | Language] | str | NotGiven | None = field(
         default_factory=lambda: NOT_GIVEN
     )
-    keywords: list[str] | str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    topic: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    previous_text: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    speaker_names: list[str] | str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    keywords: list[str] | str | NotGiven | None = field(default_factory=lambda: NOT_GIVEN)
+    topic: str | NotGiven | None = field(default_factory=lambda: NOT_GIVEN)
+    previous_text: str | NotGiven | None = field(default_factory=lambda: NOT_GIVEN)
+    speaker_names: list[str] | str | NotGiven | None = field(default_factory=lambda: NOT_GIVEN)
 
 
 def _default_http_stt_settings(
@@ -417,7 +389,7 @@ class GnaniHttpSTTService(SegmentedSTTService):
         """Transcribe a complete audio segment via the Gnani REST API.
 
         Args:
-            audio: Raw PCM or WAV audio bytes from the pipeline VAD segmenter.
+            audio: WAV audio of one speech segment from the pipeline VAD segmenter.
 
         Yields:
             TranscriptionFrame on success, ErrorFrame on API or network failure.
@@ -436,11 +408,6 @@ class GnaniHttpSTTService(SegmentedSTTService):
                 fields.get("model", "default"),
             )
 
-            # pipecat delivers raw PCM; the REST endpoint decodes an audio file.
-            # Wrap PCM in a WAV header unless the caller already passed a WAV.
-            if audio[:4] != b"RIFF":
-                audio = _pcm_to_wav(audio, self.sample_rate or _DEFAULT_STT_SAMPLE_RATE)
-
             form = aiohttp.FormData()
             form.add_field("audio_file", audio, filename="audio.wav", content_type="audio/wav")
             for name, value in fields.items():
@@ -457,7 +424,6 @@ class GnaniHttpSTTService(SegmentedSTTService):
                         request_id,
                         msg,
                     )
-                    await self.push_error(error_msg=msg)
                     yield ErrorFrame(error=msg)
                     return
                 result = await response.json()
@@ -482,7 +448,7 @@ class GnaniHttpSTTService(SegmentedSTTService):
                 yield _make_transcript_frame(
                     text,
                     is_final=True,
-                    user_id=self._user_id if hasattr(self, "_user_id") else "",
+                    user_id=self._user_id,
                     language=lang,
                     result=result,
                 )
@@ -493,7 +459,6 @@ class GnaniHttpSTTService(SegmentedSTTService):
                 request_id,
                 str(e),
             )
-            await self.push_error(error_msg=f"Error transcribing audio: {e}", exception=e)
             yield ErrorFrame(error=f"Error transcribing audio: {e}", exception=e)
 
 
@@ -512,9 +477,11 @@ class GnaniSTTSettings(STTSettings):
         language: A ``Language`` or BCP-47 code. With prisma-v3.0,
             ``"indic-auto"`` lets the model identify the language of each
             utterance; the detected language is set on each ``TranscriptionFrame``.
-        sample_rate: Audio sample rate (8000, 16000, 44100, or 48000 Hz).
-        format: 'verbatim' for raw output, 'transcribe' for ITN-normalized output;
-            'codemix' and 'transliterate' with prisma-v3.0.
+        sample_rate: Sample rate sent to Gnani (8000, 16000, 44100, or 48000 Hz).
+            Pipeline audio is resampled to it. Defaults to the pipeline input
+            rate when Gnani supports it, otherwise 16000.
+        format: 'verbatim' for raw output, 'transcribe' for ITN-normalized output.
+            prisma-v3.0 also takes 'codemix' and 'transliterate'.
         itn_native_numerals: When format='transcribe', render digits in native script.
         language_candidates: *prisma-v3.0 only, with language="indic-auto"*.
             2-4 languages the speaker is likely to use. A hint, not a limit.
@@ -522,13 +489,13 @@ class GnaniSTTSettings(STTSettings):
             (names, brands, product terms), up to 200.
     """
 
-    sample_rate: int | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    format: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    itn_native_numerals: bool | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    language_candidates: list[str | Language] | str | None | _NotGiven = field(
+    sample_rate: int | NotGiven | None = field(default_factory=lambda: NOT_GIVEN)
+    format: str | NotGiven | None = field(default_factory=lambda: NOT_GIVEN)
+    itn_native_numerals: bool | NotGiven | None = field(default_factory=lambda: NOT_GIVEN)
+    language_candidates: list[str | Language] | str | NotGiven | None = field(
         default_factory=lambda: NOT_GIVEN
     )
-    keywords: list[str] | str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    keywords: list[str] | str | NotGiven | None = field(default_factory=lambda: NOT_GIVEN)
 
 
 def _default_ws_stt_settings(
@@ -548,11 +515,13 @@ def _default_ws_stt_settings(
     )
 
 
-class GnaniSTTService(STTService):
+class GnaniSTTService(WebsocketSTTService):
     """WebSocket streaming speech-to-text service using Gnani Vachana.
 
     Provides real-time speech recognition for Indian languages via a
     persistent WebSocket connection to wss://api.vachana.ai/stt/v3/stream.
+    Gnani detects speech segments server-side and returns one final
+    transcript per segment.
 
     Event handlers (in addition to STTService events):
 
@@ -590,51 +559,39 @@ class GnaniSTTService(STTService):
         api_key: str,
         sample_rate: int | None = None,
         settings: GnaniSTTSettings | None = None,
-        keepalive_timeout: float | None = None,
-        keepalive_interval: float = 5.0,
         **kwargs,
     ):
         """Initialize the Gnani WebSocket streaming STT service.
 
         Args:
             api_key: Gnani Vachana API key for authentication.
-            sample_rate: Optional audio sample rate override (8000, 16000, 44100, or 48000 Hz).
-                When omitted, the rate is negotiated from ``StartFrame``.
+            sample_rate: Optional input audio sample rate override. When omitted, the
+                pipeline input sample rate is used.
             settings: Runtime-updatable STT settings (model, language, format, sample
                 rate, ITN and prisma-v3.0 options).
-            keepalive_timeout: Seconds of silence before sending keepalive audio. ``None`` disables.
-            keepalive_interval: Seconds between keepalive checks when enabled.
-            **kwargs: Additional arguments passed to the parent STTService.
+            **kwargs: Additional arguments passed to the parent WebsocketSTTService,
+                e.g. ``keepalive_timeout`` and ``keepalive_interval``.
 
         Raises:
             ValueError: If ``sample_rate`` or a setting is invalid for the chosen model.
         """
-        if sample_rate is not None and sample_rate not in STT_SUPPORTED_SAMPLE_RATES:
-            raise ValueError(
-                f"sample_rate must be one of {STT_SUPPORTED_SAMPLE_RATES}, got {sample_rate}"
-            )
-
         default_settings = _default_ws_stt_settings(self.Settings)
 
         if settings is not None:
             default_settings.apply_update(settings)
 
-        super().__init__(
-            sample_rate=sample_rate,
-            keepalive_timeout=keepalive_timeout,
-            keepalive_interval=keepalive_interval,
-            settings=default_settings,
-            **kwargs,
-        )
+        super().__init__(sample_rate=sample_rate, settings=default_settings, **kwargs)
 
         # Fail at construction rather than with an error frame at connect time.
         _build_ws_option_headers(self._settings)
 
         self._api_key = api_key
-        self._ws = None
-        self._receive_task = None
-        self._teardown_done = False
+        self._receive_task: asyncio.Task | None = None
         self._request_id: str | None = None
+        # Gnani expects fixed-size binary frames, so audio is re-framed here.
+        self._audio_buffer = bytearray()
+        self._send_sample_rate = _DEFAULT_STT_SAMPLE_RATE
+        self._resampler = create_stream_resampler()
 
     def language_to_service_language(self, language: Language) -> str:
         """Convert a Language enum to a Gnani STT language code.
@@ -655,23 +612,18 @@ class GnaniSTTService(STTService):
         """
         return True
 
-    def _resolve_sample_rate(self) -> int:
-        """Return a supported sample rate, preferring pipeline negotiation.
+    def _resolve_send_sample_rate(self) -> int:
+        """Return the sample rate to send to Gnani.
 
         Returns:
-            The resolved sample rate in Hz.
+            The configured rate, else the pipeline input rate when Gnani
+            supports it, else 16000 Hz.
         """
+        settings_rate = self._settings.sample_rate
+        if is_given(settings_rate) and settings_rate in STT_SUPPORTED_SAMPLE_RATES:
+            return settings_rate
         if self.sample_rate in STT_SUPPORTED_SAMPLE_RATES:
             return self.sample_rate
-        if self._init_sample_rate in STT_SUPPORTED_SAMPLE_RATES:
-            return self._init_sample_rate
-        settings_rate = getattr(self._settings, "sample_rate", None)
-        if (
-            is_given(settings_rate)
-            and isinstance(settings_rate, int)
-            and settings_rate in STT_SUPPORTED_SAMPLE_RATES
-        ):
-            return settings_rate
         return _DEFAULT_STT_SAMPLE_RATE
 
     async def _update_settings(self, delta: STTSettings) -> dict[str, Any]:  # type: ignore[override]
@@ -707,10 +659,9 @@ class GnaniSTTService(STTService):
         }
         if changed.keys() & reconnect_fields:
             if "sample_rate" in changed:
-                self._sample_rate = self._resolve_sample_rate()
-            if self._ws is not None:
+                self._send_sample_rate = self._resolve_send_sample_rate()
+            if self._websocket is not None:
                 await self._disconnect()
-                self._teardown_done = False
                 await self._connect()
 
         unhandled = {k: v for k, v in changed.items() if k not in reconnect_fields}
@@ -753,7 +704,7 @@ class GnaniSTTService(STTService):
             _make_transcript_frame(
                 text,
                 is_final=is_final,
-                user_id=self._user_id if hasattr(self, "_user_id") else "",
+                user_id=self._user_id,
                 language=language,
                 result=result,
             )
@@ -762,47 +713,14 @@ class GnaniSTTService(STTService):
     async def start(self, frame: StartFrame):
         """Start the service and open the Gnani WebSocket connection.
 
+        The pipeline sample rate is known here on every Pipecat 1.x release.
+
         Args:
             frame: Pipeline start frame with negotiated audio parameters.
         """
         await super().start(frame)
-        self._sample_rate = self._resolve_sample_rate()
-        self._teardown_done = False
+        self._send_sample_rate = self._resolve_send_sample_rate()
         await self._connect()
-
-    async def stop(self, frame: EndFrame):
-        """Stop the service and tear down the WebSocket connection.
-
-        Args:
-            frame: Pipeline end frame.
-        """
-        await super().stop(frame)
-        await self._teardown()
-
-    async def cancel(self, frame: CancelFrame):
-        """Cancel the service and tear down the WebSocket connection.
-
-        Args:
-            frame: Pipeline cancel frame.
-        """
-        await super().cancel(frame)
-        await self._teardown()
-
-    async def cleanup(self):
-        """Release WebSocket resources regardless of prior stop/cancel."""
-        await super().cleanup()
-        await self._teardown()
-
-    async def _teardown(self):
-        """Close the WebSocket and cancel the receive task.
-
-        Idempotent so it can run from ``stop()``, ``cancel()``, and
-        ``cleanup()`` without duplicating teardown work.
-        """
-        if self._teardown_done:
-            return
-        self._teardown_done = True
-        await self._disconnect()
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame | None, None]:  # type: ignore[override]
         """Stream audio bytes to the Gnani WebSocket STT endpoint.
@@ -813,35 +731,59 @@ class GnaniSTTService(STTService):
         Yields:
             ``None`` after sending audio; transcripts arrive via ``_receive_messages``.
         """
-        if not self._ws:
-            await self._connect()
-            if not self._ws:
-                yield None
-                return
+        if not self._websocket or self._websocket.state is not State.OPEN:
+            yield None
+            return
 
         try:
-            await self._ws.send(audio)
+            await self._send_audio(audio)
         except Exception as e:
+            # The receive loop reconnects a dropped connection.
             logger.warning(
-                "[STT WS] send failed, reconnecting | request_id={} | error={}",
+                "[STT WS] send failed | request_id={} | error={}",
                 self._request_id,
                 str(e),
             )
-            # Close the old socket and stop its receive task before replacing it.
-            await self._disconnect()
-            await self._connect()
-            if self._ws:
-                try:
-                    await self._ws.send(audio)
-                except Exception as e2:
-                    await self.push_error(
-                        error_msg=f"Error sending audio to Gnani: {e2}", exception=e2
-                    )
-                    yield ErrorFrame(error=f"Error sending audio to Gnani: {e2}", exception=e2)
 
         yield None
 
+    async def _send_audio(self, audio: bytes):
+        """Send audio as ``STREAM_CHUNK_BYTES`` frames, buffering any remainder."""
+        if not self._websocket:
+            return
+        audio = await self._resampler.resample(audio, self.sample_rate, self._send_sample_rate)
+        self._audio_buffer.extend(audio)
+        while len(self._audio_buffer) >= STREAM_CHUNK_BYTES:
+            chunk = bytes(self._audio_buffer[:STREAM_CHUNK_BYTES])
+            del self._audio_buffer[:STREAM_CHUNK_BYTES]
+            await self._websocket.send(chunk)
+
+    async def _send_keepalive(self, silence: bytes):
+        await self._send_audio(silence)
+        # Usage metrics need Pipecat 1.14+.
+        if hasattr(self, "_record_stt_audio_usage"):
+            self._record_stt_audio_usage(silence)
+
     async def _connect(self):
+        await super()._connect()
+        await self._connect_websocket()
+        if self._websocket and not self._receive_task:
+            self._receive_task = self.create_task(
+                self._receive_task_handler(self._report_error), name="gnani-stt-recv"
+            )
+
+    async def _disconnect(self):
+        await super()._disconnect()
+        self._audio_buffer.clear()
+        if self._receive_task:
+            await self.cancel_task(self._receive_task)
+            self._receive_task = None
+        await self._disconnect_websocket()
+
+    async def _connect_websocket(self):
+        if self._websocket and self._websocket.state is State.OPEN:
+            return
+
         request_id = _generate_request_id()
         self._request_id = request_id
         logger.debug("[STT WS] connect | request_id={}", request_id)
@@ -850,20 +792,14 @@ class GnaniSTTService(STTService):
             headers = {
                 "x-api-key-id": self._api_key,
                 **_build_ws_option_headers(self._settings),
-                "x-sample-rate": str(self._resolve_sample_rate()),
+                "x-sample-rate": str(self._send_sample_rate),
                 "x-api-request-id": request_id,
                 **sdk_headers(),
             }
 
-            self._ws = await websocket_connect(
-                GNANI_STT_WS_URL,
-                **ws_header_kwargs(headers),
-                ping_interval=20,
-                ping_timeout=20,
-                close_timeout=10,
-            )
+            self._websocket = await ws_connect(self, GNANI_STT_WS_URL, headers)
 
-            connected_msg = await asyncio.wait_for(self._ws.recv(), timeout=10)
+            connected_msg = await asyncio.wait_for(self._websocket.recv(), timeout=10)
             connected_data = json.loads(connected_msg)
             if connected_data.get("type") == "connected":
                 logger.info(
@@ -878,10 +814,6 @@ class GnaniSTTService(STTService):
                     connected_data,
                 )
 
-            self._receive_task = asyncio.create_task(
-                self._receive_messages(), name="gnani-stt-recv"
-            )
-
             await self._call_event_handler("on_connected")
 
         except Exception as e:
@@ -890,99 +822,63 @@ class GnaniSTTService(STTService):
                 request_id,
                 str(e),
             )
-            # The socket may already be open (e.g. the `connected` message was
-            # malformed or late); close it rather than leaving it to the server.
-            if self._ws is not None:
+            # The socket may be open if the `connected` message was late or malformed.
+            if self._websocket:
                 try:
-                    await self._ws.close()
+                    await self._websocket.close()
                 except Exception:
                     pass
-            self._ws = None
+            self._websocket = None
             await self.push_error(error_msg=f"Failed to connect to Gnani STT: {e}", exception=e)
             await self._call_event_handler("on_connection_error", str(e))
 
-    async def _disconnect(self):
-        if self._receive_task:
-            self._receive_task.cancel()
-            try:
-                await self._receive_task
-            except asyncio.CancelledError:
-                pass
-            self._receive_task = None
-
-        if self._ws:
-            try:
-                await self._ws.close()
-            except Exception:
-                pass
-            self._ws = None
-
-        await self._call_event_handler("on_disconnected")
+    async def _disconnect_websocket(self):
+        try:
+            if self._websocket:
+                logger.debug("[STT WS] disconnect | request_id={}", self._request_id)
+                await self._websocket.close()
+        except Exception as e:
+            logger.warning("[STT WS] close failed | error={}", str(e))
+        finally:
+            self._websocket = None
+            await self._call_event_handler("on_disconnected")
 
     async def _receive_messages(self):
-        ws = self._ws
-        try:
-            async for msg in ws:
-                if isinstance(msg, bytes):
-                    continue
+        if not self._websocket:
+            return
 
-                data = json.loads(msg)
-                msg_type = data.get("type", "")
+        async for msg in self._websocket:
+            if isinstance(msg, bytes):
+                continue
 
-                if msg_type == "transcript":
-                    text = data.get("text", "")
-                    if text:
-                        logger.debug(
-                            "[STT WS] transcript | request_id={} | text={}",
-                            self._request_id,
-                            text[:50],
-                        )
-                        # Gnani currently sends final transcripts only; honour is_final when present.
-                        is_final = data.get("is_final", True)
-                        lang = _frame_language(data, self._settings)
-                        await self._push_transcript(
-                            text,
-                            is_final=is_final,
-                            language=lang,
-                            result=data,
-                        )
+            data = json.loads(msg)
+            msg_type = data.get("type", "")
 
-                elif msg_type in (
-                    "processing",
-                    "speech_start",
-                    "vad_start",
-                    "speech_end",
-                    "vad_end",
-                ):
-                    pass
-
-                elif msg_type == "error":
-                    error_msg = data.get("message", "Unknown error")
-                    logger.error(
-                        "[STT WS] stream error | request_id={} | error={}",
+            if msg_type == "transcript":
+                text = data.get("text", "")
+                if text:
+                    logger.debug(
+                        "[STT WS] transcript | request_id={} | text={}",
                         self._request_id,
-                        error_msg,
+                        text[:50],
                     )
-                    # The stream may stay open after a recoverable error, so keep
-                    # reading it; if the server closes it, the loop ends below.
-                    await self.push_error(error_msg=f"Gnani STT: {error_msg}")
+                    # Each transcript is final for its speech segment; honour is_final when present.
+                    is_final = data.get("is_final", True)
+                    if is_final and hasattr(self, "emit_stt_usage_metrics"):
+                        await self.emit_stt_usage_metrics()
+                    lang = _frame_language(data, self._settings)
+                    await self._push_transcript(
+                        text,
+                        is_final=is_final,
+                        language=lang,
+                        result=data,
+                    )
 
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error(
-                "[STT WS] receive error | request_id={} | error={}",
-                self._request_id,
-                str(e),
-            )
-            await self.push_error(error_msg=f"Gnani STT receive error: {e}", exception=e)
-            await self._call_event_handler("on_connection_error", str(e))
-
-        # The socket ended on its own (server close, network drop, bad message).
-        # Close and forget it so the next run_stt() opens a fresh connection.
-        if self._ws is ws:
-            self._ws = None
-        try:
-            await ws.close()
-        except Exception:
-            pass
+            elif msg_type == "error":
+                error_msg = data.get("message", "Unknown error")
+                logger.error(
+                    "[STT WS] stream error | request_id={} | error={}",
+                    self._request_id,
+                    error_msg,
+                )
+                await self.push_error(error_msg=f"Gnani STT: {error_msg}")

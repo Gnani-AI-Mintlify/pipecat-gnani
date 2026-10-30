@@ -13,12 +13,10 @@ import os
 
 from dotenv import load_dotenv
 from loguru import logger
-
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMMessagesAppendFrame
+from pipecat.frames.frames import LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker, ProcessorUnusablePolicy
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
@@ -29,6 +27,8 @@ from pipecat.runner.utils import create_transport
 from pipecat.services.groq.llm import GroqLLMService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.base_transport import BaseTransport, TransportParams
+from pipecat.workers.runner import WorkerRunner
+
 from pipecat_gnani import GnaniSTTService, GnaniTTSService
 
 load_dotenv(override=True)
@@ -78,10 +78,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     )
 
     # WebSocket TTS — lowest latency, supports interruption.
-    # timbre-v2.5 (default): 42 voices, e.g. Pranav, Nalini
-    # timbre-v3.0: 13 voices — set model and voice in Settings, e.g.:
+    # timbre-v2.5 (default): 42 voices, e.g. Nalini, Kaveri, Pranav
+    # timbre-v3.0: 13 voices that speak every supported language, e.g.:
     #   settings=GnaniTTSService.Settings(voice="Shivani", model="timbre-v3.0", language="hi-IN")
-    # Optional: speed=1.1 (0.85 to 1.15; 1.0 is normal).
     tts = GnaniTTSService(
         api_key=gnani_api_key,
         sample_rate=16000,
@@ -118,31 +117,32 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         ]
     )
 
-    task = PipelineTask(
+    worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
         idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
+        processor_unusable_policy=ProcessorUnusablePolicy.END,
     )
+
+    runner = WorkerRunner(handle_sigint=runner_args.handle_sigint)
+
+    await runner.add_workers(worker)
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info("Client connected")
-        await task.queue_frames(
-            [
-                LLMMessagesAppendFrame(
-                    messages=[{"role": "user", "content": "Hello"}],
-                    run_llm=True,
-                )
-            ]
+        # Kick off the conversation.
+        context.add_message(
+            {"role": "developer", "content": "Please introduce yourself to the user."}
         )
+        await worker.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Client disconnected")
-        await task.cancel()
+        await runner.cancel()
 
-    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
-    await runner.run(task)
+    await runner.run()
 
 
 async def bot(runner_args: RunnerArguments):
