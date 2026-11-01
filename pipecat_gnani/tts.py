@@ -914,6 +914,13 @@ class GnaniTTSService(InterruptibleTTSService):
         self._teardown_done = False
         self._pcm_processor = _TtsPcmProcessor()
         self._request_id: str | None = None
+        # Pipecat reuses one audio context for every sentence of a turn, while
+        # each sentence is its own synthesis request here. These fields retire
+        # the context when the *turn* is done and the last sentence's audio has
+        # arrived — not when the first sentence's "complete" does, which used
+        # to drop the rest of the reply.
+        self._inflight_requests = 0
+        self._close_after_drain: str | None = None
 
     def can_generate_metrics(self) -> bool:
         """Return whether this service can emit TTS metrics.
@@ -922,6 +929,24 @@ class GnaniTTSService(InterruptibleTTSService):
             True — metrics are supported for WebSocket streaming synthesis.
         """
         return True
+
+    async def on_turn_context_completed(self):
+        """Retire the turn's audio context once its last request has arrived.
+
+        Pipecat reuses a single audio context for every sentence of a turn,
+        while this service synthesizes each sentence as its own request. The
+        context therefore has to outlive the individual requests: it is closed
+        here when nothing is in flight, or by ``_request_finished`` when the
+        final sentence's audio is still streaming in.
+        """
+        context_id = self._turn_context_id
+        await super().on_turn_context_completed()
+        if not context_id:
+            return
+        if self._inflight_requests == 0:
+            await self._close_audio_context(context_id)
+        else:
+            self._close_after_drain = context_id
 
     async def _update_settings(self, delta: TTSSettings) -> dict[str, Any]:  # type: ignore[override]
         """Apply runtime TTS settings for the next synthesis request.
@@ -1045,10 +1070,12 @@ class GnaniTTSService(InterruptibleTTSService):
 
             self._awaiting_first_chunk = True
             self._pcm_processor.reset()
-            await self._ws.send(json.dumps(request_body))
             await self.start_tts_usage_metrics(text)
+            self._inflight_requests += 1
+            await self._ws.send(json.dumps(request_body))
 
         except Exception as e:
+            self._inflight_requests = max(0, self._inflight_requests - 1)
             logger.error(
                 "[TTS WS] synthesize failed | request_id={} | error={}",
                 request_id,
@@ -1102,6 +1129,11 @@ class GnaniTTSService(InterruptibleTTSService):
                 pass
             self._receive_task = None
 
+        # Requests in flight died with the socket; their contexts were already
+        # dropped by the interruption handling.
+        self._inflight_requests = 0
+        self._close_after_drain = None
+
         if self._ws:
             try:
                 logger.debug("[TTS WS] disconnect")
@@ -1135,6 +1167,20 @@ class GnaniTTSService(InterruptibleTTSService):
                         await self._handle_audio_chunk(base64.b64decode(audio_b64))
 
                 elif msg_type == "complete":
+                    # Each request ends with TWO completes, in order:
+                    #   1) {"type": "complete", "data": {"is_final": true, ...}}
+                    #      — the last chunk of the request's audio.
+                    #   2) {"type": "complete", "message": "Streaming completed"}
+                    #      — an acknowledgement that carries no data.
+                    # Only the first ends a request; the acknowledgement must
+                    # not be counted twice, or the next request's audio would
+                    # be filed under a context that is about to be retired.
+                    if not isinstance(data.get("data"), dict):
+                        logger.debug(
+                            "[TTS WS] streaming completed | request_id={}",
+                            self._request_id,
+                        )
+                        continue
                     audio_b64 = _audio_b64(data)
                     if audio_b64:
                         await self._handle_audio_chunk(base64.b64decode(audio_b64))
@@ -1142,7 +1188,7 @@ class GnaniTTSService(InterruptibleTTSService):
                         "[TTS WS] synthesize complete | request_id={}",
                         self._request_id,
                     )
-                    await self._finish_audio_context()
+                    await self._request_finished()
 
                 elif msg_type == "error":
                     error_msg = data.get("message", "Unknown error")
@@ -1152,7 +1198,7 @@ class GnaniTTSService(InterruptibleTTSService):
                         error_msg,
                     )
                     await self.push_error(error_msg=f"Gnani TTS: {error_msg}")
-                    await self._finish_audio_context()
+                    await self._request_finished()
 
         except asyncio.CancelledError:
             raise
@@ -1171,16 +1217,35 @@ class GnaniTTSService(InterruptibleTTSService):
             self._ws = None
             await ws.close()
 
+    async def _request_finished(self):
+        """Mark one synthesis request's audio as fully received.
+
+        A turn's context may only be retired once the turn is over and every
+        request in it has finished; otherwise the sentences still streaming in
+        would land in a context that no longer exists.
+        """
+        self._inflight_requests = max(0, self._inflight_requests - 1)
+        if self._inflight_requests == 0 and self._close_after_drain:
+            context_id = self._close_after_drain
+            self._close_after_drain = None
+            await self._close_audio_context(context_id)
+
     async def _handle_audio_chunk(self, audio_bytes: bytes):
         audio_bytes = self._pcm_processor.process(audio_bytes)
         if audio_bytes:
             if self._awaiting_first_chunk:
                 self._awaiting_first_chunk = False
                 await self.stop_ttfb_metrics()
-            # Audio must go through the active audio context, tagged with its id. Pushing
-            # it straight downstream bypasses the context, so Pipecat (>= 1.15) reports
-            # "completed with no audio" for every utterance.
-            context_id = self.get_active_audio_context_id()
+            # Tag the audio with the turn's context rather than the playback
+            # cursor: sentences synthesize ahead of the speaker, so the playing
+            # context can still be the previous turn's. After the turn ends the
+            # context is carried in ``_close_after_drain`` until its last
+            # request drains.
+            context_id = (
+                self._turn_context_id
+                or self._close_after_drain
+                or self.get_active_audio_context_id()
+            )
             await self.append_to_audio_context(
                 context_id,
                 TTSAudioRawFrame(
@@ -1191,9 +1256,8 @@ class GnaniTTSService(InterruptibleTTSService):
                 ),
             )
 
-    async def _finish_audio_context(self):
-        """Close the active audio context: emit its stop frame in order, then retire it."""
-        context_id = self.get_active_audio_context_id()
+    async def _close_audio_context(self, context_id: str | None):
+        """Emit the context's stop frame in order, then retire it."""
         if context_id and self.audio_context_available(context_id):
             await self.append_to_audio_context(context_id, TTSStoppedFrame(context_id=context_id))
             await self.remove_audio_context(context_id)
