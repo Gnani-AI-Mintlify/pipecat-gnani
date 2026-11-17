@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`GnaniTTSService` (WebSocket TTS) spoke only the first sentence of a multi-sentence reply** (regression in 0.6.0, on every supported Pipecat version). Pipecat puts every sentence of a turn in one audio context, and that context was closed as soon as the first sentence finished, so the audio of later sentences was discarded, while their text was still added to the conversation as spoken. Each sentence's audio now goes to the context of the turn it belongs to, and the context is closed after its last sentence. Fixed on the same path:
+  - a sentence that fails part-way (`synthesis_error`) no longer causes the sentence after it to be dropped;
+  - a turn that starts while the previous turn is still streaming no longer leaves ~3 s of silence in the middle of a sentence;
+  - when the server closes the connection mid-turn, the turn ends promptly and the next turn plays on the new connection.
+
 ## [0.6.0] - 2026-10-30
 
 ### Added
