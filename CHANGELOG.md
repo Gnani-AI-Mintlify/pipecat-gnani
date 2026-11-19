@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-19
+
 ### Fixed
 
 - **`GnaniTTSService` (WebSocket TTS) spoke only the first sentence of a multi-sentence reply** (regression in 0.6.0, on every supported Pipecat version). Pipecat puts every sentence of a turn in one audio context, and that context was closed as soon as the first sentence finished, so the audio of later sentences was discarded, while their text was still added to the conversation as spoken. Each sentence's audio now goes to the context of the turn it belongs to, and the context is closed after its last sentence. Fixed on the same path:
